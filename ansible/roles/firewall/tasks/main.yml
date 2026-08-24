@@ -1,0 +1,60 @@
+---
+# =============================================================================
+# Role: firewall
+# Cấu hình UFW rules cho K8s cluster nodes
+# Tự động chọn rules theo node_role (master/worker)
+# =============================================================================
+
+- name: Cài đặt ufw
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+- name: Mở SSH port
+  community.general.ufw:
+    rule: allow
+    port: "{{ ansible_port | default('22') | string }}"
+    proto: tcp
+    comment: "SSH"
+
+- name: Trust Tailscale interface
+  community.general.ufw:
+    rule: allow
+    interface: "{{ vpn_interface }}"
+    direction: in
+    comment: "Tailscale traffic"
+
+- name: Mở ports cho Control Plane
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    comment: "{{ item.comment }}"
+  loop: "{{ master_firewall_ports }}"
+  when: "'masters' in group_names"
+
+- name: Mở ports cho Worker
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    comment: "{{ item.comment }}"
+  loop: "{{ worker_firewall_ports }}"
+  when: "'workers' in group_names"
+
+- name: Bật ufw sau khi đã có allow rules
+  community.general.ufw:
+    state: enabled
+    policy: deny
+    direction: incoming
+
+- name: Trust Pod network (control plane)
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ pod_cidr }}"
+    comment: "K8s Pod network"
+  when: "'masters' in group_names"
+
+- name: Reload ufw
+  community.general.ufw:
+    state: reloaded

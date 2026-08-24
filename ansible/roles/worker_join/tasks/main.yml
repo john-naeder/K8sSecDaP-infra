@@ -1,0 +1,144 @@
+---
+# =============================================================================
+# Role: worker_join
+# Join worker node vào K8s cluster
+# - Reset trước khi join (đảm bảo sạch)
+# - Chạy kubeadm join
+# - Patch kubelet node-ip sau join
+# =============================================================================
+
+# --- Reset state cũ ---
+- name: Reset kubeadm state cũ (nếu có)
+  ansible.builtin.command: >
+    kubeadm reset -f --cri-socket unix:///run/containerd/containerd.sock
+  register: kubeadm_reset
+  changed_when: "'[reset] ' in kubeadm_reset.stdout"
+  failed_when: false
+
+- name: Xóa CNI config cũ
+  ansible.builtin.file:
+    path: /etc/cni/net.d
+    state: absent
+
+- name: Dọn kube/cni iptables chains cũ (không flush toàn bộ để tránh rớt Tailscale)
+  ansible.builtin.shell: |
+    for table in filter nat mangle; do
+      # Xóa rule references trước khi xóa chain
+      iptables -t "$table" -S 2>/dev/null \
+        | awk '/^-A (KUBE-|CNI-|cali-|CALI-)/ {sub(/^-A /, "-D "); print}' \
+        | while read -r rule; do
+            iptables -t "$table" $rule 2>/dev/null || true
+          done
+
+      # Flush + delete chains do kube/cni tạo
+      iptables -t "$table" -S 2>/dev/null \
+        | awk '/^-N (KUBE-|CNI-|cali-|CALI-)/ {print $2}' \
+        | while read -r chain; do
+            iptables -t "$table" -F "$chain" 2>/dev/null || true
+            iptables -t "$table" -X "$chain" 2>/dev/null || true
+          done
+    done
+  changed_when: false
+  failed_when: false
+
+# --- Cấu hình kubelet node-ip trước khi join ---
+- name: Cấu hình kubelet defaults
+  ansible.builtin.copy:
+    content: 'KUBELET_EXTRA_ARGS=--node-ip={{ tailscale_ip }}'
+    dest: /etc/default/kubelet
+    mode: "0644"
+
+# --- Join cluster ---
+- name: Verify inventory có group masters
+  ansible.builtin.assert:
+    that:
+      - groups['masters'] is defined
+      - groups['masters'] | length > 0
+    fail_msg: "Inventory thiếu group 'masters' hoặc group rỗng; không thể lấy join command."
+
+- name: Lấy join command từ master
+  ansible.builtin.set_fact:
+    join_command: "{{ hostvars[groups['masters'][0]].k8s_join_command | default('') }}"
+
+- name: Tạo join command mới từ master nếu chưa có fact
+  ansible.builtin.command: kubeadm token create --print-join-command
+  delegate_to: "{{ groups['masters'][0] }}"
+  register: join_command_fallback
+  changed_when: false
+  when: join_command | length == 0
+
+- name: Dùng join command fallback
+  ansible.builtin.set_fact:
+    join_command: "{{ join_command_fallback.stdout }}"
+  when: join_command | length == 0
+
+- name: Verify join command hợp lệ
+  ansible.builtin.assert:
+    that:
+      - join_command is defined
+      - join_command | length > 0
+      - join_command is match('^kubeadm\\s+join\\s+')
+    fail_msg: "Không lấy được kubeadm join command hợp lệ từ master."
+
+- name: Hiển thị join command
+  ansible.builtin.debug:
+    msg: "Joining cluster: {{ join_command }}"
+
+- name: Join cluster
+  ansible.builtin.command: >
+    {{ join_command }} --node-name {{ inventory_hostname }}
+  register: join_result
+  changed_when: true
+
+- name: Hiển thị join result
+  ansible.builtin.debug:
+    var: join_result.stdout_lines
+
+# --- Post-join: Patch kubelet node-ip ---
+- name: Đợi kubeadm-flags.env được tạo
+  ansible.builtin.wait_for:
+    path: /var/lib/kubelet/kubeadm-flags.env
+    timeout: 30
+
+- name: Kiểm tra --node-ip trong kubeadm-flags.env
+  ansible.builtin.command: grep -q "node-ip" /var/lib/kubelet/kubeadm-flags.env
+  register: nodeip_check
+  changed_when: false
+  failed_when: false
+
+- name: Patch --node-ip vào kubeadm-flags.env
+  ansible.builtin.lineinfile:
+    path: /var/lib/kubelet/kubeadm-flags.env
+    regexp: '^(KUBELET_KUBEADM_ARGS=.*)"$'
+    line: '\1 --node-ip={{ tailscale_ip }}"'
+    backrefs: true
+  when: nodeip_check.rc != 0
+  notify: Restart kubelet after join
+
+- name: Restart kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: true
+
+- name: Đợi kubelet ổn định
+  ansible.builtin.pause:
+    seconds: 10
+
+# --- Verify ---
+- name: Kiểm tra kubelet status
+  ansible.builtin.systemd:
+    name: kubelet
+  register: kubelet_status
+
+- name: Hiển thị kết quả
+  ansible.builtin.debug:
+    msg: |
+      ═══════════════════════════════════════════
+       Worker {{ inventory_hostname }} đã join cluster!
+       Tailscale IP: {{ tailscale_ip }}
+       kubelet: {{ kubelet_status.status.ActiveState }}
+
+       Trên master, kiểm tra:
+         kubectl get nodes -o wide
+      ═══════════════════════════════════════════

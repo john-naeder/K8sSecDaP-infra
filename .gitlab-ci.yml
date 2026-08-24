@@ -1,0 +1,15 @@
+include:
+  - project: 'john-naeder/ci-templates'
+    ref: main
+    file: '/security.gitlab-ci.yml'
+  # Until that project exists on your GitLab, vendor the file instead:
+  #   - local: '.gitlab/ci/security.yml'
+
+stages:
+  - scan
+  - report
+
+variables:
+  # Mostly Ansible: iac:trivy and the two secret jobs do the real work here,
+  # and vault.yml is ansible-vault encrypted so it is expected to look like noise.
+  SECURITY_FAIL_ON: ''

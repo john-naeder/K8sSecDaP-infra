@@ -1,0 +1,7 @@
+---
+# Handlers cho tailscale role (verify-only)
+# Không cần restart vì role không thay đổi config Tailscale
+- name: Restart tailscaled
+  ansible.builtin.systemd:
+    name: tailscaled
+    state: restarted

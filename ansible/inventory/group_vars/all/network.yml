@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# network.yml — Cấu hình mạng cluster
+#
+# Bao gồm: Pod/Service CIDR, cổng firewall, VPN interface.
+# Không chứa thông tin nhạy cảm (secrets nằm trong vault.yml).
+# =============================================================================
+
+# --- Kubernetes Networking ---
+pod_cidr: "10.244.0.0/16"              # Calico IPPool (phải khớp deploy/cni/calico/calico-custom.yaml)
+service_cidr: "10.95.0.0/12"
+
+# --- VPN Interface ---
+vpn_interface: "tailscale0"             # Interface dùng cho inter-node communication
+
+# --- API Server ---
+k8s_api_port: 6443
+
+# --- Firewall: Control Plane Ports ---
+master_firewall_ports:
+  - { port: "6443",       proto: "tcp", comment: "K8s API server" }
+  - { port: "2379:2380",  proto: "tcp", comment: "etcd client/peer" }
+  - { port: "10250",      proto: "tcp", comment: "kubelet API" }
+  - { port: "10259",      proto: "tcp", comment: "kube-scheduler" }
+  - { port: "10257",      proto: "tcp", comment: "kube-controller-manager" }
+  - { port: "4789",       proto: "udp", comment: "Calico VXLAN" }
+
+# --- Firewall: Worker Node Ports ---
+worker_firewall_ports:
+  - { port: "10250",       proto: "tcp", comment: "kubelet API" }
+  - { port: "10256",       proto: "tcp", comment: "kube-proxy healthz" }
+  - { port: "30000:32767", proto: "tcp", comment: "NodePort Services" }
+  - { port: "4789",        proto: "udp", comment: "Calico VXLAN" }

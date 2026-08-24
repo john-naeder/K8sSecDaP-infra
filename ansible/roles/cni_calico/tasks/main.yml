@@ -1,0 +1,132 @@
+---
+# =============================================================================
+# Role: cni_calico
+# Deploy Calico CNI (Tigera Operator + custom Installation CR).
+# Chỉ chạy trên master node sau khi kubeadm init xong.
+#
+# Custom Installation manifest nằm ngoài Ansible tree:
+#   deploy/cni/calico/calico-custom.yaml
+#   deploy/cni/calico/install-calico.sh
+# (single source of truth — cũng dùng cho RUNBOOK / manual ops)
+# =============================================================================
+
+- name: Tạo thư mục staging cho Calico manifests
+  ansible.builtin.file:
+    path: "/home/{{ k8s_admin_user }}/calico"
+    state: directory
+    owner: "{{ k8s_admin_user }}"
+    group: "{{ k8s_admin_user }}"
+    mode: "0755"
+
+# Calico assets vendored in roles/cni_calico/files/ (self-contained bootstrap).
+# Bản canonical cho GitOps nằm ở K8sSecDaP-deploy/cni/calico (ArgoCD zt-cni-calico).
+- name: Copy calico-custom.yaml lên master
+  ansible.builtin.copy:
+    src: calico-custom.yaml
+    dest: "/home/{{ k8s_admin_user }}/calico/calico-custom.yaml"
+    owner: "{{ k8s_admin_user }}"
+    group: "{{ k8s_admin_user }}"
+    mode: "0644"
+
+- name: Copy install-calico.sh lên master
+  ansible.builtin.copy:
+    src: install-calico.sh
+    dest: "/home/{{ k8s_admin_user }}/calico/install-calico.sh"
+    owner: "{{ k8s_admin_user }}"
+    group: "{{ k8s_admin_user }}"
+    mode: "0755"
+
+- name: Chạy install-calico.sh (idempotent)
+  ansible.builtin.command: ./install-calico.sh
+  args:
+    chdir: "/home/{{ k8s_admin_user }}/calico"
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+    CALICO_VERSION: "{{ calico_version }}"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: calico_install
+  changed_when: "'installed' in calico_install.stdout"
+
+- name: Đợi calico-node DaemonSet rollout
+  ansible.builtin.command: >-
+    kubectl -n calico-system rollout status ds/calico-node --timeout=300s
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  changed_when: false
+
+- name: Đợi CoreDNS ready
+  ansible.builtin.command: >-
+    kubectl -n kube-system wait --for=condition=Ready pod
+    -l k8s-app=kube-dns --timeout=180s
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: coredns_ready
+  changed_when: false
+  retries: 3
+  delay: 10
+  until: coredns_ready.rc == 0
+
+- name: Verify computed MTU = 1230 (Tailscale overlay)
+  ansible.builtin.command: >-
+    kubectl get installation default
+    -o jsonpath={.status.mtu}
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: mtu_check
+  changed_when: false
+  retries: 6
+  delay: 10
+  until: mtu_check.stdout | length > 0
+  failed_when: mtu_check.stdout | int != 1230
+
+# --- Final verification ---
+- name: Lấy danh sách nodes
+  ansible.builtin.command: kubectl get nodes -o wide
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: node_list
+  changed_when: false
+
+- name: Hiển thị nodes
+  ansible.builtin.debug:
+    var: node_list.stdout_lines
+
+- name: Lấy danh sách pods
+  ansible.builtin.command: kubectl get pods -A
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: pod_list
+  changed_when: false
+
+- name: Hiển thị pods
+  ansible.builtin.debug:
+    var: pod_list.stdout_lines
+
+- name: Verify node InternalIP = Tailscale IP
+  ansible.builtin.command: >-
+    kubectl get node {{ inventory_hostname }}
+    -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: node_ip_check
+  changed_when: false
+
+- name: Báo cáo node IP check
+  ansible.builtin.debug:
+    msg: >-
+      Node IP: {{ node_ip_check.stdout }}
+      {{ '✓ Tailscale OK' if node_ip_check.stdout == tailscale_ip
+         else '⚠ MISMATCH (expected ' + tailscale_ip + ')' }}

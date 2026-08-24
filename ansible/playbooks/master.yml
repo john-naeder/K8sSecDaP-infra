@@ -1,0 +1,27 @@
+---
+# =============================================================================
+# master.yml — Setup control plane node
+#
+# Chạy:  ansible-playbook playbooks/master.yml
+#
+# Yêu cầu: Ubuntu + Tailscale + SSH đã cài trên master node.
+# Bao gồm: verify tailscale → provision → init cluster → deploy CNI
+# =============================================================================
+
+- name: "Verify Tailscale + Provision control plane"
+  hosts: masters
+  become: true
+  roles:
+    - tailscale          # Verify-only
+    - common
+    - containerd
+    - kubernetes
+    - cni_plugins
+    - firewall
+
+- name: "Init K8s cluster + deploy Calico"
+  hosts: masters
+  become: true
+  roles:
+    - master_init
+    - cni_calico

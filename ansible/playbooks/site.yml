@@ -1,0 +1,62 @@
+---
+# =============================================================================
+# site.yml — Setup toàn bộ cluster (master + workers)
+#
+# Chạy:  ansible-playbook playbooks/site.yml
+#
+# Yêu cầu: Ubuntu Server + Tailscale + SSH đã cài thủ công trên các nodes.
+#           Chạy bootstrap/sync-inventory.sh trước để đồng bộ Tailscale IPs.
+#
+# Thứ tự:
+#   1. Verify Tailscale + Provision K8s components trên tất cả nodes
+#   2. Init cluster trên master
+#   3. Deploy Calico CNI (Tigera Operator + custom Installation CR)
+#   4. Join workers vào cluster
+# =============================================================================
+
+- name: "Phase 1: Verify Tailscale + Provision K8s nodes"
+  hosts: k8s_cluster
+  become: true
+  roles:
+    - tailscale          # Verify-only: kiểm tra TS đang chạy, IP khớp
+    - common
+    - containerd
+    - kubernetes
+    - cni_plugins
+    - firewall
+
+- name: "Phase 2: Init K8s cluster (control plane) + Calico CNI"
+  hosts: masters
+  become: true
+  roles:
+    - master_init
+    - cni_calico
+
+- name: "Phase 3: Join worker nodes"
+  hosts: workers
+  become: true
+  roles:
+    - worker_join
+
+- name: "Phase 4: Final verification"
+  hosts: masters
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  tasks:
+    - name: Lấy trạng thái nodes
+      ansible.builtin.command: kubectl get nodes -o wide
+      register: final_nodes
+      changed_when: false
+
+    - name: Hiển thị cluster status
+      ansible.builtin.debug:
+        msg: "{{ final_nodes.stdout_lines }}"
+
+    - name: Lấy trạng thái pods
+      ansible.builtin.command: kubectl get pods -A
+      register: final_pods
+      changed_when: false
+
+    - name: Hiển thị pod status
+      ansible.builtin.debug:
+        msg: "{{ final_pods.stdout_lines }}"

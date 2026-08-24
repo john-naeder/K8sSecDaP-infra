@@ -1,0 +1,77 @@
+---
+# =============================================================================
+# reset.yml — Reset K8s trên node (kubeadm reset)
+#
+# Reset tất cả:
+#   ansible-playbook playbooks/reset.yml
+#
+# Reset một node:
+#   ansible-playbook playbooks/reset.yml --limit userver-home-worker
+#
+# Reset chỉ workers:
+#   ansible-playbook playbooks/reset.yml --limit workers
+#
+# CẢNH BÁO: Sẽ xóa toàn bộ cấu hình K8s trên node!
+# =============================================================================
+
+- name: "Reset K8s nodes"
+  hosts: k8s_cluster
+  become: true
+  tasks:
+    - name: "⚠ Reset kubeadm"
+      ansible.builtin.command: >
+        kubeadm reset -f --cri-socket unix:///run/containerd/containerd.sock
+      register: reset_result
+      changed_when: true
+      failed_when: false
+
+    - name: Xóa CNI config
+      ansible.builtin.file:
+        path: /etc/cni/net.d
+        state: absent
+
+    - name: Xóa Calico runtime artifacts
+      ansible.builtin.shell: |
+        ip link delete vxlan.calico 2>/dev/null || true
+        ip link delete tunl0 2>/dev/null || true
+        rm -rf /var/lib/calico /var/run/calico
+        rm -f /opt/cni/bin/calico /opt/cni/bin/calico-ipam
+      changed_when: false
+      failed_when: false
+
+    - name: Dọn kube/cni iptables chains (không flush toàn bộ)
+      ansible.builtin.shell: |
+        for table in filter nat mangle; do
+          # Xóa rule references trước khi xóa chain
+          iptables -t "$table" -S 2>/dev/null \
+            | awk '/^-A (KUBE-|CNI-|cali-|CALI-)/ {sub(/^-A /, "-D "); print}' \
+            | while read -r rule; do
+                iptables -t "$table" $rule 2>/dev/null || true
+              done
+
+          # Flush + delete chains do kube/cni tạo
+          iptables -t "$table" -S 2>/dev/null \
+            | awk '/^-N (KUBE-|CNI-|cali-|CALI-)/ {print $2}' \
+            | while read -r chain; do
+                iptables -t "$table" -F "$chain" 2>/dev/null || true
+                iptables -t "$table" -X "$chain" 2>/dev/null || true
+              done
+        done
+      changed_when: false
+
+    - name: Xóa kubeconfig (chỉ master)
+      ansible.builtin.file:
+        path: "/home/{{ k8s_admin_user | default('john') }}/.kube/config"
+        state: absent
+      when: "'masters' in group_names"
+
+    - name: Restart kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+        daemon_reload: true
+      failed_when: false
+
+    - name: Thông báo
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: K8s đã reset. Có thể chạy lại master.yml/worker.yml để re-init."

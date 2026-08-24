@@ -1,0 +1,17 @@
+# Ansible secrets — NEVER commit
+.vault_password
+**/.vault_password
+*.env
+.env*
+# keep *.example templates
+!*.example
+
+# Ansible runtime
+*.retry
+logs/
+ansible/logs/
+
+# OS / IDE
+.idea/
+.vscode/
+.DS_Store

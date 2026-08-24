@@ -1,0 +1,63 @@
+# Calico Installation custom resource — applied by tigera-operator after
+# the operator itself is up. This selects the Calico-only data-plane
+# (no eBPF) for maximum compatibility with the existing kernel modules
+# already loaded for the eBPF collector (avoids hook conflicts).
+#
+# IPPool CIDR matches the kubeadm default 10.244.0.0/16 used by Flannel.
+# Change `cidr` if the cluster was bootstrapped with a different
+# --pod-network-cidr flag.
+---
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  # Pin operator-managed control-plane workloads (calico-apiserver,
+  # calico-kube-controllers, calico-typha) to nodes with a stable network
+  # path to the API server. Required because worker-home connects to
+  # master only via Tailscale DERP relay (no IPv6, CGNAT symmetric NAT),
+  # which causes TLS handshakes to time out and these pods to CrashLoop
+  # (2026-05-30). Nodes that should host these workloads MUST carry the
+  # label `zt-stable=true` — see cni/calico/RUNBOOK.md in K8sSecDaP-deploy.
+  controlPlaneNodeSelector:
+    zt-stable: "true"
+  calicoNetwork:
+    bgp: Disabled                # VXLAN works without BGP — simpler setup
+    # Pin pod/tunnel MTU to 1230 = tailscale0 MTU (1280) − VXLAN header (50).
+    # Without this, Felix autodetects 1450 from a public NIC (eth0/wlp*),
+    # then keeps trying to enlarge vxlan.calico to 1450 — bigger than what
+    # the Tailscale overlay can carry. Result: TLS handshake to API server
+    # times out on the node that runs the wrong MTU (worker-home, 2026-05-17).
+    mtu: 1230
+    ipPools:
+      # `name` must match the live IPPool (operator otherwise tries to
+      # delete the unnamed pool — see incident 2026-05-30).
+      - name: default-ipv4-ippool
+        blockSize: 26
+        cidr: 10.244.0.0/16
+        encapsulation: VXLAN
+        natOutgoing: Enabled
+        nodeSelector: all()
+        # Operator defaults; spell them out so `kubectl diff` is clean
+        # and ArgoCD/Flux don't keep re-syncing.
+        allowedUses:
+          - Workload
+          - Tunnel
+    # Match Flannel's existing setup: pod traffic between nodes flows
+    # through the Tailscale overlay, not the public NIC. Without this,
+    # Calico picks eth0/ens* and cross-node routes break the moment a
+    # node is no longer publicly reachable.
+    nodeAddressAutodetectionV4:
+      interface: tailscale0
+  registry: quay.io/
+  variant: Calico
+---
+# APIServer enables Calico's projectcalico.org API group, used by
+# CalicoNetworkPolicy / GlobalNetworkPolicy if we ever need them.
+# The standard Kubernetes networking.k8s.io/v1 NetworkPolicy works
+# without this — it's enabled for future flexibility, not required.
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}

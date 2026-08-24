@@ -1,0 +1,18 @@
+---
+# =============================================================================
+# vault.yml.example — Template cho Ansible secrets
+#
+# Copy file này thành vault.yml và điền giá trị thật:
+#   cp vault.yml.example vault.yml
+#   ansible-vault encrypt vault.yml
+#
+# Hoặc tạo trực tiếp:
+#   ansible-vault create vault.yml
+#
+# Chỉ chứa secrets mà ANSIBLE cần (provision OS/K8s node).
+# Secrets khác (tunnel token, Harbor password) thuộc về K8s layer,
+# không cần ở đây — xem code/.env.example cho tổng quan.
+# =============================================================================
+
+# Thêm Ansible secrets ở đây, ví dụ:
+# vault_sudo_password: "YOUR_SUDO_PASSWORD"

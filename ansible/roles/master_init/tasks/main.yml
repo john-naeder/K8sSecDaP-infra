@@ -1,0 +1,114 @@
+---
+# =============================================================================
+# Role: master_init
+# Khởi tạo K8s cluster trên control plane node
+# - kubeadm init
+# - Setup kubeconfig
+# - Patch kubelet node-ip
+# - Generate join command cho workers
+# =============================================================================
+
+- name: Kiểm tra cluster đã tồn tại chưa
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: k8s_admin_conf
+
+- name: Pre-pull K8s images
+  ansible.builtin.command: kubeadm config images pull
+  when: not k8s_admin_conf.stat.exists
+  changed_when: true
+
+- name: Khởi tạo cluster với kubeadm
+  ansible.builtin.command: >
+    kubeadm init
+    --apiserver-advertise-address={{ tailscale_ip }}
+    --apiserver-cert-extra-sans={{ tailscale_ip }},{{ inventory_hostname }}
+    --pod-network-cidr={{ pod_cidr }}
+    --service-cidr={{ service_cidr }}
+    --node-name={{ inventory_hostname }}
+    {{ '--upload-certs' if kubeadm_upload_certs | default(true) else '' }}
+  register: kubeadm_init
+  when: not k8s_admin_conf.stat.exists
+  changed_when: true
+
+- name: Hiển thị kubeadm init output
+  ansible.builtin.debug:
+    var: kubeadm_init.stdout_lines
+  when: kubeadm_init is changed
+
+# --- Setup kubeconfig cho admin user ---
+- name: Tạo thư mục .kube cho {{ k8s_admin_user }}
+  ansible.builtin.file:
+    path: "/home/{{ k8s_admin_user }}/.kube"
+    state: directory
+    owner: "{{ k8s_admin_user }}"
+    group: "{{ k8s_admin_user }}"
+    mode: "0700"
+
+- name: Copy admin.conf vào kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ k8s_admin_user }}/.kube/config"
+    owner: "{{ k8s_admin_user }}"
+    group: "{{ k8s_admin_user }}"
+    mode: "0600"
+    remote_src: true
+
+# --- Patch kubelet node-ip sau kubeadm init ---
+- name: Kiểm tra kubeadm-flags.env
+  ansible.builtin.stat:
+    path: /var/lib/kubelet/kubeadm-flags.env
+  register: kubeadm_flags
+
+- name: Patch --node-ip vào kubeadm-flags.env
+  ansible.builtin.lineinfile:
+    path: /var/lib/kubelet/kubeadm-flags.env
+    regexp: '^(KUBELET_KUBEADM_ARGS=.*)"$'
+    line: '\1 --node-ip={{ tailscale_ip }}"'
+    backrefs: true
+  when:
+    - kubeadm_flags.stat.exists
+  register: kubelet_patched
+  notify: Restart kubelet after init
+
+- name: Restart kubelet nếu đã patch
+  ansible.builtin.systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: true
+  when: kubelet_patched is changed
+
+- name: Đợi kubelet ổn định
+  ansible.builtin.pause:
+    seconds: 5
+  when: kubelet_patched is changed
+
+# --- Generate join command ---
+- name: Tạo join command cho workers
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: join_command_raw
+  changed_when: false
+
+- name: Lưu join command vào fact
+  ansible.builtin.set_fact:
+    k8s_join_command: "{{ join_command_raw.stdout }}"
+
+- name: Hiển thị join command
+  ansible.builtin.debug:
+    msg: "Join command: {{ k8s_join_command }}"
+
+# --- Verify ---
+- name: Verify API server
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/home/{{ k8s_admin_user }}/.kube/config cluster-info
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: cluster_info
+  changed_when: false
+  retries: 5
+  delay: 5
+  until: cluster_info.rc == 0
+
+- name: Hiển thị cluster info
+  ansible.builtin.debug:
+    var: cluster_info.stdout_lines

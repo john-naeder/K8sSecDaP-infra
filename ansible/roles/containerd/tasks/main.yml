@@ -1,0 +1,142 @@
+---
+# =============================================================================
+# Role: containerd
+# Cài đặt containerd từ Docker official repo, cấu hình SystemdCgroup
+# Bao gồm fix cho containerd 2.2.x CRI restart issue
+# =============================================================================
+
+- name: Cài packages cần thiết
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+
+- name: Tạo thư mục keyrings
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Download Docker GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+    force: false
+
+- name: Lấy Ubuntu codename
+  ansible.builtin.command: bash -c '. /etc/os-release && echo $VERSION_CODENAME'
+  register: ubuntu_codename
+  changed_when: false
+
+- name: Lấy architecture
+  ansible.builtin.command: dpkg --print-architecture
+  register: dpkg_arch
+  changed_when: false
+
+- name: Thêm Docker apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ dpkg_arch.stdout }} signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu {{ ubuntu_codename.stdout }} stable
+    state: present
+    filename: docker
+
+- name: Cài đặt containerd.io
+  ansible.builtin.apt:
+    name: containerd.io
+    state: present
+    update_cache: true
+
+- name: Tạo thư mục /etc/containerd
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Generate containerd default config
+  ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml.generated
+  register: containerd_config_generated
+  changed_when: true
+
+- name: Đánh dấu config đã generate
+  ansible.builtin.file:
+    path: /etc/containerd/config.toml.generated
+    state: touch
+    mode: "0644"
+  when: containerd_config_generated.changed
+
+- name: Bật SystemdCgroup = true (bắt buộc cho kubeadm)
+  ansible.builtin.lineinfile:
+    path: /etc/containerd/config.toml
+    regexp: '(\s*)SystemdCgroup\s*=\s*false'
+    line: '\1SystemdCgroup = true'
+    backrefs: true
+  notify: Restart containerd
+
+- name: Enable containerd service
+  ansible.builtin.systemd:
+    name: containerd
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# Fix cho containerd 2.2.x: apt install tự start service với config mặc định
+# Sau khi đổi config phải restart lại để CRI hoạt động đúng
+- name: Force restart containerd (fix CRI cho containerd 2.2.x)
+  ansible.builtin.systemd:
+    name: containerd
+    state: restarted
+    daemon_reload: true
+
+- name: Đợi containerd khởi động
+  ansible.builtin.pause:
+    seconds: 3
+
+- name: Map architecture cho crictl release
+  ansible.builtin.set_fact:
+    crictl_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'arm'}[ansible_architecture] | default(ansible_architecture) }}"
+
+- name: Kiểm tra crictl đã có chưa
+  ansible.builtin.command: command -v crictl
+  register: crictl_bin
+  changed_when: false
+  failed_when: false
+
+- name: Download crictl binary (nếu thiếu)
+  ansible.builtin.get_url:
+    url: "https://github.com/kubernetes-sigs/cri-tools/releases/download/{{ crictl_version | default('v1.32.0') }}/crictl-{{ crictl_version | default('v1.32.0') }}-linux-{{ crictl_arch }}.tar.gz"
+    dest: "/tmp/crictl-{{ crictl_version | default('v1.32.0') }}-linux-{{ crictl_arch }}.tar.gz"
+    mode: "0644"
+  when: crictl_bin.rc != 0
+
+- name: Cài crictl binary vào /usr/local/bin (nếu thiếu)
+  ansible.builtin.unarchive:
+    src: "/tmp/crictl-{{ crictl_version | default('v1.32.0') }}-linux-{{ crictl_arch }}.tar.gz"
+    dest: /usr/local/bin
+    remote_src: true
+    mode: "0755"
+  when: crictl_bin.rc != 0
+
+- name: Verify crictl binary
+  ansible.builtin.command: crictl --version
+  register: crictl_version_check
+  changed_when: false
+
+- name: Verify CRI endpoint hoạt động
+  ansible.builtin.command: >
+    crictl --runtime-endpoint unix:///var/run/containerd/containerd.sock info
+  register: cri_check
+  retries: 3
+  delay: 2
+  until: cri_check.rc == 0
+  changed_when: false
+
+- name: Thông báo containerd CRI status
+  ansible.builtin.debug:
+    msg: "containerd CRI: OK (SystemdCgroup = true)"

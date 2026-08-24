@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# Role: cni_plugins
+# Download CNI plugins binary (loopback, bridge, flannel, etc.)
+# =============================================================================
+
+- name: Tạo thư mục CNI plugins
+  ansible.builtin.file:
+    path: /opt/cni/bin
+    state: directory
+    mode: "0755"
+
+- name: Kiểm tra CNI plugins đã có chưa
+  ansible.builtin.stat:
+    path: /opt/cni/bin/loopback
+  register: cni_loopback
+
+- name: Download & extract CNI plugins {{ cni_plugins_version }}
+  ansible.builtin.unarchive:
+    src: "https://github.com/containernetworking/plugins/releases/download/{{ cni_plugins_version }}/cni-plugins-linux-amd64-{{ cni_plugins_version }}.tgz"
+    dest: /opt/cni/bin
+    remote_src: true
+  when: not cni_loopback.stat.exists
+
+- name: Verify CNI plugins
+  ansible.builtin.stat:
+    path: /opt/cni/bin/loopback
+  register: cni_verify
+
+- name: Fail nếu CNI plugins không có
+  ansible.builtin.fail:
+    msg: "CNI plugins không tìm thấy tại /opt/cni/bin/. CoreDNS sẽ không chạy được!"
+  when: not cni_verify.stat.exists

@@ -1,0 +1,17 @@
+# =============================================================================
+# bootstrap.env — Cấu hình chung cho bootstrap scripts
+#
+# Copy từ bootstrap.env.example:
+#   cp bootstrap.env.example bootstrap.env
+#
+# KHÔNG COMMIT file bootstrap.env (chứa SSH key path & user info)
+# =============================================================================
+
+# SSH user trên các node (dùng cho Ansible)
+ADMIN_USER=johnnaeder
+
+# SSH private key path (trên máy local)
+SSH_PRIVATE_KEY=~/.ssh/id_ed25519
+
+# Ansible directory (relative to bootstrap/)
+ANSIBLE_DIR=../ansible

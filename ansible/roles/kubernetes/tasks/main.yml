@@ -1,0 +1,81 @@
+---
+# =============================================================================
+# Role: kubernetes
+# Cài đặt kubeadm, kubelet, kubectl + cấu hình kubelet Tailscale IP
+# =============================================================================
+
+- name: Cài packages cần thiết cho K8s repo
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - gpg
+    state: present
+
+- name: Tạo thư mục keyrings
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Download Kubernetes GPG key
+  ansible.builtin.shell: |
+    curl -fsSL "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key" \
+      | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  args:
+    creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+- name: Thêm Kubernetes apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg]
+      https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/ /
+    state: present
+    filename: kubernetes
+
+- name: Cài đặt kubeadm, kubelet, kubectl
+  ansible.builtin.apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    update_cache: true
+
+- name: Hold K8s packages (tránh tự upgrade)
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Cấu hình kubelet defaults với Tailscale IP
+  ansible.builtin.template:
+    src: kubelet-defaults.j2
+    dest: /etc/default/kubelet
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart kubelet
+
+- name: Tạo thư mục kubelet systemd override
+  ansible.builtin.file:
+    path: /etc/systemd/system/kubelet.service.d
+    state: directory
+    mode: "0755"
+
+- name: Cấu hình kubelet Tailscale IP (systemd drop-in)
+  ansible.builtin.template:
+    src: 20-tailscale.conf.j2
+    dest: /etc/systemd/system/kubelet.service.d/20-tailscale.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart kubelet
+
+- name: Enable kubelet service
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    daemon_reload: true

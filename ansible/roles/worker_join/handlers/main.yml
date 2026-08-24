@@ -1,0 +1,6 @@
+---
+- name: Restart kubelet after join
+  ansible.builtin.systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: true

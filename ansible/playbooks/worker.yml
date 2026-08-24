@@ -1,0 +1,60 @@
+---
+# =============================================================================
+# worker.yml — Setup và join worker nodes
+#
+# Chạy toàn bộ workers:
+#   ansible-playbook playbooks/worker.yml
+#
+# Chạy một worker cụ thể:
+#   ansible-playbook playbooks/worker.yml --limit userver-home-worker
+#
+# Yêu cầu: Ubuntu + Tailscale + SSH đã cài trên worker nodes.
+#           Master phải đã init (chạy master.yml trước).
+# =============================================================================
+
+# Trước tiên: lấy join command từ master
+- name: "Lấy join command từ master"
+  hosts: masters
+  become: true
+  tasks:
+    - name: Generate join command
+      ansible.builtin.command: kubeadm token create --print-join-command
+      register: join_command_raw
+      changed_when: false
+
+    - name: Lưu join command
+      ansible.builtin.set_fact:
+        k8s_join_command: "{{ join_command_raw.stdout }}"
+
+# Verify Tailscale + Provision + join workers
+- name: "Verify Tailscale + Provision worker nodes"
+  hosts: workers
+  become: true
+  roles:
+    - tailscale          # Verify-only
+    - common
+    - containerd
+    - kubernetes
+    - cni_plugins
+    - firewall
+
+- name: "Join workers vào cluster"
+  hosts: workers
+  become: true
+  roles:
+    - worker_join
+
+# Verify từ master
+- name: "Verify cluster"
+  hosts: masters
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  tasks:
+    - name: Hiển thị nodes
+      ansible.builtin.command: kubectl get nodes -o wide
+      register: nodes_status
+      changed_when: false
+
+    - name: Cluster nodes
+      ansible.builtin.debug:
+        msg: "{{ nodes_status.stdout_lines }}"

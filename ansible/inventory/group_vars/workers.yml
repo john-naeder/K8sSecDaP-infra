@@ -1,0 +1,7 @@
+---
+# =============================================================================
+# workers.yml — Cấu hình riêng cho Worker nodes
+# =============================================================================
+
+# Nếu true, sẽ tự động join cluster sau khi cài xong
+auto_join_cluster: true

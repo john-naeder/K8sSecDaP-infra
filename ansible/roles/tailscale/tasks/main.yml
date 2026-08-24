@@ -1,0 +1,117 @@
+---
+# =============================================================================
+# Role: tailscale
+# VERIFY-ONLY — Kiểm tra Tailscale đã cài đặt và kết nối trước khi Ansible
+# provision K8s components. KHÔNG cài đặt Tailscale.
+#
+# Tailscale được cài thủ công khi setup bare metal:
+#   curl -fsSL https://tailscale.com/install.sh | sh
+#   sudo tailscale up --hostname=<tên-node>
+#
+# Sau đó chạy bootstrap/sync-inventory.sh để đồng bộ IP vào inventory.
+# =============================================================================
+
+# ── 1. Kiểm tra Tailscale binary ────────────────────────────
+- name: Kiểm tra Tailscale đã cài chưa
+  ansible.builtin.command: which tailscale
+  register: tailscale_installed
+  changed_when: false
+  failed_when: false
+
+- name: Fail nếu Tailscale chưa cài
+  ansible.builtin.fail:
+    msg: >
+      Tailscale chưa được cài trên {{ inventory_hostname }}.
+      Cài thủ công:
+        curl -fsSL https://tailscale.com/install.sh | sh
+        sudo tailscale up --hostname={{ inventory_hostname }}
+      Sau đó chạy lại bootstrap/sync-inventory.sh
+  when: tailscale_installed.rc != 0
+
+# ── 2. Kiểm tra tailscaled service ──────────────────────────
+- name: Kiểm tra tailscaled service đang chạy
+  ansible.builtin.systemd:
+    name: tailscaled
+    state: started
+    enabled: true
+  # Không cài, chỉ đảm bảo service đang chạy
+
+# ── 3. Kiểm tra kết nối tailnet ─────────────────────────────
+- name: Kiểm tra Tailscale đã kết nối tailnet
+  ansible.builtin.command: tailscale status
+  register: ts_status
+  changed_when: false
+  failed_when: false
+
+- name: Fail nếu Tailscale chưa kết nối
+  ansible.builtin.fail:
+    msg: >
+      Tailscale chưa kết nối trên {{ inventory_hostname }}.
+      SSH vào node và chạy: sudo tailscale up
+  when: ts_status.rc != 0
+
+# ── 4. Verify Tailscale IP khớp inventory ────────────────────
+- name: Lấy Tailscale IPv4
+  ansible.builtin.command: tailscale ip -4
+  register: ts_ipv4
+  changed_when: false
+
+- name: Lưu Tailscale IP vào fact
+  ansible.builtin.set_fact:
+    detected_tailscale_ip: "{{ ts_ipv4.stdout | trim }}"
+
+- name: Verify Tailscale IP khớp với inventory
+  ansible.builtin.assert:
+    that:
+      - detected_tailscale_ip == tailscale_ip
+    fail_msg: >
+      Tailscale IP trên node ({{ detected_tailscale_ip }}) không khớp
+      với inventory ({{ tailscale_ip }}).
+      Chạy lại: cd bootstrap && bash sync-inventory.sh
+    success_msg: "Tailscale IP: {{ detected_tailscale_ip }} ✓"
+  when: tailscale_ip is defined
+
+# ── 5. Verify interface tailscale0 tồn tại ──────────────────
+- name: Kiểm tra interface tailscale0
+  ansible.builtin.command: ip addr show tailscale0
+  register: ts_iface
+  changed_when: false
+  failed_when: false
+
+- name: Fail nếu thiếu interface tailscale0
+  ansible.builtin.fail:
+    msg: "Interface tailscale0 không tồn tại trên {{ inventory_hostname }}. Tailscale chưa chạy đúng."
+  when: ts_iface.rc != 0
+
+# ── 6. Test kết nối tới control plane (từ worker) ───────────
+- name: Verify worker có master host để ping
+  ansible.builtin.assert:
+    that:
+      - groups['masters'] is defined
+      - groups['masters'] | length > 0
+      - hostvars[groups['masters'][0]].tailscale_ip is defined
+    fail_msg: "Inventory thiếu master hoặc thiếu tailscale_ip của master."
+  when: node_role is defined and node_role == "worker"
+
+- name: Ping control plane qua Tailscale (worker only)
+  ansible.builtin.command: >
+    ping -c 2 -W 5 {{ hostvars[groups['masters'][0]]['tailscale_ip'] }}
+  when: node_role is defined and node_role == "worker"
+  changed_when: false
+  failed_when: false
+  register: ping_master
+
+- name: Fail nếu worker không ping được master
+  ansible.builtin.fail:
+    msg: >
+      Worker {{ inventory_hostname }} không ping được control plane
+      ({{ hostvars[groups['masters'][0]]['tailscale_ip'] }}).
+      Kiểm tra Tailscale trên cả 2 node.
+  when:
+    - ping_master is defined
+    - ping_master.rc is defined
+    - ping_master.rc != 0
+
+- name: Tailscale verify passed
+  ansible.builtin.debug:
+    msg: "✓ Tailscale OK — {{ inventory_hostname }} ({{ detected_tailscale_ip }})"

@@ -1,0 +1,11 @@
+---
+# =============================================================================
+# masters.yml — Cấu hình riêng cho Master nodes
+# =============================================================================
+
+# kubeadm init options
+kubeadm_upload_certs: true
+kubeadm_init_extra_args: ""
+
+# User sẽ sở hữu kubeconfig (~/.kube/config)
+k8s_admin_user: "johnnaeder"
