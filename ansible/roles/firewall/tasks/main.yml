@@ -17,12 +17,23 @@
     proto: tcp
     comment: "SSH"
 
-- name: Trust Tailscale interface
+# Node tin nhau trong LAN. Không mở từng cổng một cho traffic nội bộ cluster
+# vì Cilium còn dùng nhiều cổng động (health, endpoint probe) mà liệt kê hết
+# thì vừa dài vừa sai.
+- name: Trust LAN {{ lan_cidr }}
   community.general.ufw:
     rule: allow
-    interface: "{{ vpn_interface }}"
+    from_ip: "{{ lan_cidr }}"
+    comment: "Cluster LAN"
+
+# Tailscale vẫn là đường quản trị từ xa, nhưng không còn là đường của cluster.
+- name: Trust Tailscale interface (đường quản trị)
+  community.general.ufw:
+    rule: allow
+    interface: tailscale0
     direction: in
-    comment: "Tailscale traffic"
+    comment: "Tailscale admin access"
+  failed_when: false
 
 - name: Mở ports cho Control Plane
   community.general.ufw:
@@ -42,18 +53,33 @@
   loop: "{{ worker_firewall_ports }}"
   when: "'workers' in group_names"
 
+# routingMode=native: gói pod đi qua node dưới dạng FORWARD, không phải INPUT.
+# ufw mặc định DROP FORWARD, và hệ quả là pod cùng node nói chuyện được còn
+# khác node thì không — triệu chứng trông hệt như lỗi CNI.
+- name: Đặt DEFAULT_FORWARD_POLICY=ACCEPT
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: '^DEFAULT_FORWARD_POLICY='
+    line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+  notify: Reload ufw config
+
 - name: Bật ufw sau khi đã có allow rules
   community.general.ufw:
     state: enabled
     policy: deny
     direction: incoming
 
-- name: Trust Pod network (control plane)
+- name: Trust Pod network
   community.general.ufw:
     rule: allow
     from_ip: "{{ pod_cidr }}"
     comment: "K8s Pod network"
-  when: "'masters' in group_names"
+
+- name: Trust Service network
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ service_cidr }}"
+    comment: "K8s Service network"
 
 - name: Reload ufw
   community.general.ufw:

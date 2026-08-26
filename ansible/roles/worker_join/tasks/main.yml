@@ -20,31 +20,42 @@
     path: /etc/cni/net.d
     state: absent
 
-- name: Dọn kube/cni iptables chains cũ (không flush toàn bộ để tránh rớt Tailscale)
+- name: Dọn iptables chains của kube/CNI (giữ nguyên ts-* của Tailscale và ufw-*)
   ansible.builtin.shell: |
-    for table in filter nat mangle; do
-      # Xóa rule references trước khi xóa chain
-      iptables -t "$table" -S 2>/dev/null \
-        | awk '/^-A (KUBE-|CNI-|cali-|CALI-)/ {sub(/^-A /, "-D "); print}' \
-        | while read -r rule; do
-            iptables -t "$table" $rule 2>/dev/null || true
-          done
-
-      # Flush + delete chains do kube/cni tạo
-      iptables -t "$table" -S 2>/dev/null \
-        | awk '/^-N (KUBE-|CNI-|cali-|CALI-)/ {print $2}' \
-        | while read -r chain; do
-            iptables -t "$table" -F "$chain" 2>/dev/null || true
-            iptables -t "$table" -X "$chain" 2>/dev/null || true
-          done
+    set -u
+    PFX='^(cali-|CALI-|KUBE-|CILIUM_|DOCKER)'
+    # Xoá theo SỐ THỨ TỰ rule, không dựng lại rule-spec.
+    #
+    # Cách cũ (`iptables -S | sed 's/^-A /-D /'` rồi đưa vào shell) trượt im
+    # lặng: rule của Calico mang `--comment "cali:Cz_u1IQiXIMmKD4c"`, và dấu
+    # nháy trong đó thành ký tự thật khi khai triển không quote, nên iptables
+    # không khớp được rule nào. Chain vì thế vẫn bị tham chiếu và -X báo
+    # "Device or resource busy" — cũng bị nuốt luôn.
+    #
+    # Phải gỡ rule THAM CHIẾU trước rồi mới xoá được chain, nên có nhiều vòng.
+    for pass in 1 2 3 4; do
+      for t in filter nat mangle raw; do
+        for chain in $(iptables -t "$t" -L -n 2>/dev/null | awk '/^Chain /{print $2}'); do
+          iptables -t "$t" -L "$chain" --line-numbers -n 2>/dev/null \
+            | awk -v p="$PFX" '/^[0-9]/ && $2 ~ p {print $1}' \
+            | sort -rn \
+            | while read -r n; do iptables -t "$t" -D "$chain" "$n" 2>/dev/null; done
+        done
+        for c in $(iptables -t "$t" -S 2>/dev/null \
+                   | awk -v p="^-N (cali-|CALI-|KUBE-|CILIUM_|DOCKER)" '$0 ~ p {print $2}'); do
+          iptables -t "$t" -F "$c" 2>/dev/null
+          iptables -t "$t" -X "$c" 2>/dev/null
+        done
+      done
+      [ "$(iptables-save | grep -cE '^:(cali-|CALI-|KUBE-|CILIUM_|DOCKER)')" -eq 0 ] && break
     done
+    echo "remaining=$(iptables-save | grep -cE '^:(cali-|CALI-|KUBE-|CILIUM_|DOCKER)')"
+  register: ipt_clean
   changed_when: false
-  failed_when: false
-
-# --- Cấu hình kubelet node-ip trước khi join ---
+  failed_when: "'remaining=0' not in ipt_clean.stdout"
 - name: Cấu hình kubelet defaults
   ansible.builtin.copy:
-    content: 'KUBELET_EXTRA_ARGS=--node-ip={{ tailscale_ip }}'
+    content: 'KUBELET_EXTRA_ARGS=--node-ip={{ node_ip }}'
     dest: /etc/default/kubelet
     mode: "0644"
 
@@ -110,7 +121,7 @@
   ansible.builtin.lineinfile:
     path: /var/lib/kubelet/kubeadm-flags.env
     regexp: '^(KUBELET_KUBEADM_ARGS=.*)"$'
-    line: '\1 --node-ip={{ tailscale_ip }}"'
+    line: '\1 --node-ip={{ node_ip }}"'
     backrefs: true
   when: nodeip_check.rc != 0
   notify: Restart kubelet after join
@@ -136,7 +147,7 @@
     msg: |
       ═══════════════════════════════════════════
        Worker {{ inventory_hostname }} đã join cluster!
-       Tailscale IP: {{ tailscale_ip }}
+       Node IP: {{ node_ip }}
        kubelet: {{ kubelet_status.status.ActiveState }}
 
        Trên master, kiểm tra:

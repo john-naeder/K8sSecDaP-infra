@@ -1,0 +1,218 @@
+---
+# =============================================================================
+# Role: cni_cilium
+# Deploy Cilium làm CNI, thay hoàn toàn Calico VÀ kube-proxy.
+# Chỉ chạy trên master sau kubeadm init.
+#
+# Điều kiện tiên quyết (do master_init lo):
+#   kubeadm init ... --skip-phases=addon/kube-proxy
+# Nếu kube-proxy vẫn còn, iptables của nó và eBPF của Cilium sẽ cùng viết
+# NAT cho Service và kết quả phụ thuộc thứ tự — role này xoá nó đi.
+# =============================================================================
+
+- name: Kiểm tra kernel đủ mới cho kubeProxyReplacement
+  ansible.builtin.assert:
+    that:
+      - ansible_kernel is version('5.10', '>=')
+    fail_msg: >-
+      Cilium kubeProxyReplacement cần kernel >= 5.10, node đang chạy
+      {{ ansible_kernel }}.
+    success_msg: "kernel {{ ansible_kernel }} OK"
+
+# autoDirectNodeRoutes chỉ hoạt động khi các node ARP thấy nhau trực tiếp.
+# Khác subnet thì route được cài nhưng gói rơi im lặng — pod ping được pod
+# cùng node, không ping được pod node khác, và không có log nào giải thích.
+# So sánh theo tiền tố /24 thay vì filter ipaddr: ipaddr cần thư viện netaddr
+# trên máy chạy Ansible, và một precondition mà bản thân nó có thể fail vì
+# thiếu dependency thì không phải là precondition tốt.
+- name: Kiểm tra mọi node nằm trong {{ lan_cidr }}
+  vars:
+    lan_prefix: "{{ lan_cidr.split('.')[:3] | join('.') }}."
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].node_ip.startswith(lan_prefix)
+    fail_msg: >-
+      {{ item }} có node_ip={{ hostvars[item].node_ip }} nằm ngoài {{ lan_cidr }}.
+      routingMode=native + autoDirectNodeRoutes cần mọi node cùng một L2
+      subnet. Khác subnet thì phải quay lại tunnel, hoặc dựng Cilium BGP.
+  loop: "{{ groups['k8s_cluster'] }}"
+
+- name: Kiểm tra lan_cidr là /24 (điều kiện của phép so tiền tố ở trên)
+  ansible.builtin.assert:
+    that:
+      - lan_cidr.endswith('/24')
+    fail_msg: >-
+      lan_cidr={{ lan_cidr }} không phải /24. Task kiểm tra subnet ở trên so
+      theo ba octet đầu nên chỉ đúng với /24 — sửa nó trước khi đổi lan_cidr.
+
+- name: Kiểm tra node_ip thật sự có trên máy
+  ansible.builtin.assert:
+    that:
+      - node_ip in ansible_all_ipv4_addresses
+    fail_msg: >-
+      Inventory khai node_ip={{ node_ip }} nhưng {{ inventory_hostname }}
+      không mang địa chỉ đó. Địa chỉ đang có: {{ ansible_all_ipv4_addresses }}
+
+# --- Helm ---------------------------------------------------------------
+- name: Kiểm tra helm đã có chưa
+  ansible.builtin.command: helm version --short
+  register: helm_check
+  changed_when: false
+  failed_when: false
+
+- name: Cài helm {{ helm_version }}
+  ansible.builtin.unarchive:
+    src: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+    dest: /usr/local/bin
+    remote_src: true
+    extra_opts: ["--strip-components=1", "linux-amd64/helm"]
+    mode: "0755"
+  when: helm_check.rc != 0
+
+- name: Thêm helm repo cilium
+  ansible.builtin.command: helm repo add cilium {{ cilium_helm_repo }} --force-update
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  changed_when: false
+
+- name: Update helm repo
+  ansible.builtin.command: helm repo update cilium
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  changed_when: false
+
+# Pin sai version là lỗi hay gặp và Helm báo rất mờ. Chặn sớm.
+- name: Verify chart cilium {{ cilium_version }} tồn tại
+  ansible.builtin.command: >-
+    helm search repo cilium/cilium --version {{ cilium_version }} -o json
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: chart_search
+  changed_when: false
+
+- name: Fail nếu không tìm thấy chart version
+  ansible.builtin.assert:
+    that:
+      - (chart_search.stdout | from_json | length) > 0
+    fail_msg: >-
+      Không có chart cilium/cilium version {{ cilium_version }}.
+      Xem bản có sẵn: helm search repo cilium/cilium --versions
+
+# --- kube-proxy phải biến mất -------------------------------------------
+- name: Xoá kube-proxy nếu còn sót (cluster cũ / init thiếu --skip-phases)
+  ansible.builtin.command: >-
+    kubectl -n kube-system delete {{ item }} --ignore-not-found
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  loop:
+    - daemonset/kube-proxy
+    - configmap/kube-proxy
+  register: kp_delete
+  changed_when: "'deleted' in kp_delete.stdout"
+
+# --- Cài Cilium ----------------------------------------------------------
+- name: Tạo thư mục staging
+  ansible.builtin.file:
+    path: "/home/{{ k8s_admin_user }}/cilium"
+    state: directory
+    owner: "{{ k8s_admin_user }}"
+    group: "{{ k8s_admin_user }}"
+    mode: "0755"
+
+- name: Render cilium-values.yaml
+  ansible.builtin.template:
+    src: cilium-values.yaml.j2
+    dest: "/home/{{ k8s_admin_user }}/cilium/values.yaml"
+    owner: "{{ k8s_admin_user }}"
+    group: "{{ k8s_admin_user }}"
+    mode: "0644"
+
+- name: helm upgrade --install cilium
+  ansible.builtin.command: >-
+    helm upgrade --install cilium cilium/cilium
+    --version {{ cilium_version }}
+    --namespace {{ cilium_namespace }}
+    --values /home/{{ k8s_admin_user }}/cilium/values.yaml
+    --wait --timeout 10m
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: cilium_install
+  changed_when: "'STATUS: deployed' in cilium_install.stdout"
+
+- name: Đợi cilium DaemonSet rollout
+  ansible.builtin.command: >-
+    kubectl -n {{ cilium_namespace }} rollout status ds/cilium --timeout=300s
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  changed_when: false
+
+# --- Verify --------------------------------------------------------------
+# CoreDNS không thể Ready trước khi CNI hoạt động, nên đây vừa là kiểm tra
+# CoreDNS vừa là kiểm tra datapath.
+- name: Đợi CoreDNS Ready
+  ansible.builtin.command: >-
+    kubectl -n kube-system wait --for=condition=Ready pod
+    -l k8s-app=kube-dns --timeout=180s
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: coredns_ready
+  changed_when: false
+  retries: 3
+  delay: 10
+  until: coredns_ready.rc == 0
+
+- name: Lấy cilium status
+  ansible.builtin.shell: |
+    set -o pipefail
+    pod=$(kubectl -n {{ cilium_namespace }} get pod -l k8s-app=cilium \
+          -o jsonpath='{.items[0].metadata.name}')
+    kubectl -n {{ cilium_namespace }} exec "$pod" -c cilium-agent -- cilium-dbg status
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: cilium_status
+  changed_when: false
+
+- name: Hiển thị cilium status
+  ansible.builtin.debug:
+    var: cilium_status.stdout_lines
+
+- name: Verify KubeProxyReplacement = True
+  ansible.builtin.assert:
+    that:
+      - cilium_status.stdout is search('KubeProxyReplacement:\\s+True')
+    fail_msg: >-
+      Cilium báo KubeProxyReplacement không phải True. Thường là do
+      k8sServiceHost/k8sServicePort sai, hoặc kube-proxy vẫn còn chạy.
+
+- name: Verify datapath là native, không phải tunnel
+  ansible.builtin.assert:
+    that:
+      - cilium_status.stdout is search('Routing:\\s+Network:\\s+Native')
+    fail_msg: >-
+      Cilium vẫn đang ở chế độ tunnel. Thường là do values không được áp
+      dụng — kiểm tra /home/{{ k8s_admin_user }}/cilium/values.yaml trên master.
+
+- name: Lấy danh sách nodes
+  ansible.builtin.command: kubectl get nodes -o wide
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: node_list
+  changed_when: false
+
+- name: Hiển thị nodes
+  ansible.builtin.debug:
+    var: node_list.stdout_lines

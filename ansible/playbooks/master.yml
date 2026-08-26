@@ -12,16 +12,17 @@
   hosts: masters
   become: true
   roles:
-    - tailscale          # Verify-only
+    - role: tailscale
+      when: ansible_transport_net == 'tailscale'
     - common
     - containerd
     - kubernetes
     - cni_plugins
     - firewall
 
-- name: "Init K8s cluster + deploy Calico"
+- name: "Init K8s cluster + deploy Cilium"
   hosts: masters
   become: true
   roles:
     - master_init
-    - cni_calico
+    - cni_cilium

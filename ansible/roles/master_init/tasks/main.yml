@@ -6,6 +6,13 @@
 # - Setup kubeconfig
 # - Patch kubelet node-ip
 # - Generate join command cho workers
+#
+# kube_proxy_replacement=true (mặc định) -> bỏ luôn phase addon/kube-proxy.
+# Cilium sẽ đảm nhiệm Service NAT bằng eBPF. Nếu để kube-proxy chạy song song,
+# cả hai cùng lập trình NAT cho cùng một Service và kết quả tuỳ thứ tự nạp.
+#
+# Hệ quả: sau bước này CoreDNS sẽ Pending cho tới khi role cni_cilium chạy
+# xong. Đó là trạng thái đúng, không phải lỗi.
 # =============================================================================
 
 - name: Kiểm tra cluster đã tồn tại chưa
@@ -21,11 +28,12 @@
 - name: Khởi tạo cluster với kubeadm
   ansible.builtin.command: >
     kubeadm init
-    --apiserver-advertise-address={{ tailscale_ip }}
-    --apiserver-cert-extra-sans={{ tailscale_ip }},{{ inventory_hostname }}
+    --apiserver-advertise-address={{ node_ip }}
+    --apiserver-cert-extra-sans={{ node_ip }},{{ tailscale_ip }},{{ inventory_hostname }}
     --pod-network-cidr={{ pod_cidr }}
     --service-cidr={{ service_cidr }}
     --node-name={{ inventory_hostname }}
+    {{ '--skip-phases=addon/kube-proxy' if kube_proxy_replacement | default(true) else '' }}
     {{ '--upload-certs' if kubeadm_upload_certs | default(true) else '' }}
   register: kubeadm_init
   when: not k8s_admin_conf.stat.exists
@@ -64,7 +72,7 @@
   ansible.builtin.lineinfile:
     path: /var/lib/kubelet/kubeadm-flags.env
     regexp: '^(KUBELET_KUBEADM_ARGS=.*)"$'
-    line: '\1 --node-ip={{ tailscale_ip }}"'
+    line: '\1 --node-ip={{ node_ip }}"'
     backrefs: true
   when:
     - kubeadm_flags.stat.exists
@@ -112,3 +120,21 @@
 - name: Hiển thị cluster info
   ansible.builtin.debug:
     var: cluster_info.stdout_lines
+
+# --- Cho phép schedule lên control plane ----------------------------------
+# Cluster này chỉ có 1-2 worker, để master rỗng là lãng phí gần một nửa RAM.
+# An toàn được là nhờ kubeReserved/systemReserved ở role kubernetes — bỏ taint
+# mà không giữ chỗ thì workload sẽ ăn tranh với etcd, và etcd đói RAM thì mất
+# cả cluster chứ không chỉ mất pod.
+- name: Bỏ taint control-plane
+  ansible.builtin.command: >-
+    kubectl taint nodes {{ inventory_hostname }}
+    node-role.kubernetes.io/control-plane:NoSchedule-
+  environment:
+    KUBECONFIG: "/home/{{ k8s_admin_user }}/.kube/config"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: untaint
+  changed_when: "'untainted' in untaint.stdout"
+  failed_when: untaint.rc != 0 and 'not found' not in untaint.stderr
+  when: master_schedulable | default(false)

@@ -50,7 +50,7 @@
     - kubeadm
     - kubectl
 
-- name: Cấu hình kubelet defaults với Tailscale IP
+- name: Cấu hình kubelet defaults với node-ip
   ansible.builtin.template:
     src: kubelet-defaults.j2
     dest: /etc/default/kubelet
@@ -65,10 +65,10 @@
     state: directory
     mode: "0755"
 
-- name: Cấu hình kubelet Tailscale IP (systemd drop-in)
+- name: Cấu hình kubelet node-ip (systemd drop-in)
   ansible.builtin.template:
-    src: 20-tailscale.conf.j2
-    dest: /etc/systemd/system/kubelet.service.d/20-tailscale.conf
+    src: 20-node-ip.conf.j2
+    dest: /etc/systemd/system/kubelet.service.d/20-node-ip.conf
     owner: root
     group: root
     mode: "0644"
@@ -79,3 +79,33 @@
     name: kubelet
     enabled: true
     daemon_reload: true
+
+# --- Giữ chỗ cho hệ thống -------------------------------------------------
+# Sửa thẳng /var/lib/kubelet/config.yaml thay vì dùng cờ --kube-reserved:
+# các cờ đó đã deprecated từ lâu và sẽ bị gỡ.
+#
+# LƯU Ý: `kubeadm upgrade node` sinh lại file này từ ConfigMap kubelet-config
+# trong kube-system, nên sau mỗi lần upgrade phải chạy lại role này.
+- name: Đọc KubeletConfiguration hiện tại
+  ansible.builtin.slurp:
+    src: /var/lib/kubelet/config.yaml
+  register: kubelet_cfg_raw
+  failed_when: false
+
+- name: Ghi reserved/eviction vào KubeletConfiguration
+  ansible.builtin.copy:
+    dest: /var/lib/kubelet/config.yaml
+    content: "{{ merged | to_nice_yaml(indent=2) }}"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    current: "{{ kubelet_cfg_raw.content | b64decode | from_yaml }}"
+    merged: >-
+      {{ current | combine({
+        'kubeReserved':   {'cpu': kubelet_kube_reserved_cpu,   'memory': kubelet_kube_reserved_memory},
+        'systemReserved': {'cpu': kubelet_system_reserved_cpu, 'memory': kubelet_system_reserved_memory},
+        'evictionHard':   {'memory.available': kubelet_eviction_memory, 'nodefs.available': '10%'},
+      }, recursive=True) }}
+  when: kubelet_cfg_raw.content is defined
+  notify: Restart kubelet

@@ -1,21 +1,53 @@
 ---
 # =============================================================================
 # versions.yml — Phiên bản phần mềm
-#
-# File này chứa tất cả version pins cho các thành phần trong cluster.
-# Cập nhật tại đây khi muốn upgrade.
 # =============================================================================
 
 # Kubernetes
-k8s_version: "1.32"                    # Major.Minor cho apt repo
-k8s_version_full: "1.32.*"             # Pattern cho apt install
+k8s_version: "1.32"
+k8s_version_full: "1.32.*"
 
 # Container Runtime
-containerd_version: "latest"            # Version containerd.io từ Docker repo
-crictl_version: "v1.32.0"               # CRI CLI (crictl) cho verify containerd
+containerd_version: "latest"
+crictl_version: "v1.32.0"
 
 # CNI Plugins (binary)
 cni_plugins_version: "v1.6.2"
 
-# Calico CNI
-calico_version: "v3.28.2"
+# --- Cilium ---------------------------------------------------------------
+cilium_version: "1.17.4"                # Helm chart version (không có tiền tố v)
+cilium_namespace: "kube-system"
+cilium_helm_repo: "https://helm.cilium.io/"
+
+# routingMode=native: không đóng gói.
+#   - Không mất 50 byte VXLAN header.
+#   - tcpdump/Hubble thấy IP pod thật trên dây, không phải gói VXLAN phải bóc.
+#   - Bớt CPU encap/decap.
+# Điều kiện: mọi node cùng một L2 subnet. Nếu sau này tách subnet thì phải
+# quay lại tunnel, hoặc dựng Cilium BGP để router học route pod.
+#
+# MTU THỰC TẾ = 1280, KHÔNG PHẢI 1500. Đo được: ping -M do qua pod ở hai node
+# khác nhau, payload 1252 (gói IP 1280) qua, 1253 rớt.
+#
+# Lý do: auto-detect nhặt CẢ wlo1 (1500) LẪN tailscale0 (1280), và Cilium lấy
+# MTU nhỏ nhất trong danh sách device. Đây là hành vi ĐÚNG, không phải bug —
+# ép 1500 trong khi tailscale0 vẫn nằm trong danh sách thì gói pod đi ra
+# tailnet sẽ là 1500 byte nhét vào đường 1280 và treo im lặng.
+#
+# Đánh đổi có ý thức: giữ tailscale0 -> NodePort nghe cả trên tailnet, tức
+# GitLab/Argo truy cập được từ xa, đổi lấy MTU 1280. Muốn 1500 thì khai
+# cilium_devices chỉ gồm NIC LAN, và mất đường NodePort qua tailnet.
+# (Trước đây Calico + VXLAN qua tailnet cho 1230, nên 1280 vẫn là cải thiện.)
+cilium_native_routing_cidr: "10.244.0.0/16"
+
+# Không khai cilium_devices. Auto-detect chọn device có default route, và giờ
+# đó đúng là NIC mang node IP. Hardcode còn tệ hơn: tên khác nhau giữa các máy
+# (wlp2s0 vs wlo1) nên một giá trị chung sẽ sai ở ít nhất một node.
+
+# Hubble ở mức agent (rẻ), tắt relay + UI (~300MB).
+cilium_hubble: true
+cilium_hubble_relay: false
+cilium_hubble_ui: false
+
+# Helm (cần trên master để cài Cilium)
+helm_version: "v3.16.3"

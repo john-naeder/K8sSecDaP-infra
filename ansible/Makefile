@@ -1,4 +1,4 @@
-ansible-playbook playbooks/reset.yml --limit userver-worker-home --ask-become-pass.PHONY: help sync register setup master worker reset ping lint vault-encrypt vault-edit
+.PHONY: help sync register setup master worker reset ping lint vault-encrypt vault-edit
 
 ANSIBLE_DIR := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 BOOTSTRAP_DIR := $(ANSIBLE_DIR)/../bootstrap
@@ -49,7 +49,7 @@ check: ## Dry-run setup toàn bộ (không thực thi)
 lint: ## Lint playbooks (cần ansible-lint)
 	cd $(ANSIBLE_DIR) && ansible-lint playbooks/ roles/
 
-# --- Vault ---
+# --- Vault (hiện KHÔNG dùng — xem ghi chú trong ansible.cfg) ---
 
 vault-encrypt: ## Mã hóa file vault.yml
 	cd $(ANSIBLE_DIR) && ansible-vault encrypt inventory/group_vars/all/vault.yml

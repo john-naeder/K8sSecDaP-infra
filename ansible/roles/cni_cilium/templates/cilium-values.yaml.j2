@@ -1,0 +1,82 @@
+# {{ ansible_managed }}
+# Cilium values — cluster bare-metal, mọi node cùng một LAN /24.
+# Sinh từ roles/cni_cilium/templates/cilium-values.yaml.j2. KHÔNG sửa trên node.
+
+# --- kube-proxy replacement ------------------------------------------------
+# Cluster được kubeadm init với --skip-phases=addon/kube-proxy nên KHÔNG có
+# kube-proxy. Agent vì thế không thể tìm API server qua kubernetes.default.svc:
+# chính nó là thứ tạo ra ClusterIP đó. Phải trỏ vào địa chỉ thật.
+#
+# Hệ quả cần biết: đây là IP CỐ ĐỊNH của control plane. Đổi IP master về sau
+# là phải sinh lại cert API server và cài lại Cilium — nên IP này phải tĩnh.
+kubeProxyReplacement: true
+k8sServiceHost: "{{ hostvars[groups['masters'][0]].node_ip }}"
+k8sServicePort: {{ k8s_api_port }}
+
+# --- Datapath: native, không đóng gói --------------------------------------
+# Mọi node nằm cùng {{ lan_cidr }} nên chúng ARP thấy nhau trực tiếp.
+# autoDirectNodeRoutes cài route tới podCIDR của node khác qua node IP của nó,
+# và thế là đủ — không cần VXLAN, không cần BGP, không cần đụng router.
+#
+# Không khai MTU. Cilium tự lấy MTU nhỏ nhất trong các device nó nhận diện,
+# và vì tailscale0 (1280) nằm trong đó nên pod MTU = 1280 chứ không phải 1500.
+# Để nguyên là đúng: khai cứng 1500 sẽ khiến gói pod đi ra tailnet treo im
+# lặng — TCP vẫn bắt tay được rồi đứng khi gặp gói lớn.
+routingMode: native
+autoDirectNodeRoutes: true
+ipv4NativeRoutingCIDR: "{{ cilium_native_routing_cidr }}"
+
+ipam:
+  # Dùng podCIDR kubeadm đã cấp cho mỗi Node thay vì để Cilium quản pool riêng
+  # — một nguồn sự thật, khớp --pod-network-cidr={{ pod_cidr }}.
+  mode: kubernetes
+
+# Không khai devices: auto-detect chọn device có default route, và đó đúng là
+# NIC mang node IP. Tên interface khác nhau giữa các máy (wlp2s0 vs wlo1) nên
+# một giá trị chung sẽ sai ở ít nhất một node.
+
+enableIPv4Masquerade: true
+bpf:
+  # Chỉ SNAT traffic ra NGOÀI ipv4NativeRoutingCIDR. Pod nói với pod thì giữ
+  # nguyên IP nguồn, nên NetworkPolicy và log đọc ra đúng bên gọi.
+  masquerade: true
+ipv6:
+  enabled: false
+
+# --- Cắt giảm cho RAM ------------------------------------------------------
+operator:
+  # Mặc định 2 replica + anti-affinity; trên 2 node thì replica thứ hai vừa
+  # thừa vừa Pending.
+  replicas: 1
+  resources:
+    requests: { cpu: 25m, memory: 96Mi }
+    limits:   { memory: 256Mi }
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { memory: 640Mi }
+
+# cilium-envoy chạy DaemonSet riêng từ 1.16. Chỉ cần cho L7 policy / Ingress /
+# Gateway API — không dùng cái nào, nên tắt (~150MB mỗi node).
+envoy:
+  enabled: false
+l7Proxy: false
+
+ingressController:
+  enabled: false
+gatewayAPI:
+  enabled: false
+clustermesh:
+  useAPIServer: false
+
+hubble:
+  # Trong agent thì gần như miễn phí, và với native routing nó thấy IP pod
+  # thật. relay + UI mới là phần tốn RAM.
+  enabled: {{ cilium_hubble | lower }}
+  relay:
+    enabled: {{ cilium_hubble_relay | lower }}
+  ui:
+    enabled: {{ cilium_hubble_ui | lower }}
+
+prometheus:
+  enabled: false

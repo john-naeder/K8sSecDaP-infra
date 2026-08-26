@@ -10,7 +10,7 @@
 # Thứ tự:
 #   1. Verify Tailscale + Provision K8s components trên tất cả nodes
 #   2. Init cluster trên master
-#   3. Deploy Calico CNI (Tigera Operator + custom Installation CR)
+#   3. Deploy Cilium CNI (Helm, kubeProxyReplacement)
 #   4. Join workers vào cluster
 # =============================================================================
 
@@ -18,19 +18,22 @@
   hosts: k8s_cluster
   become: true
   roles:
-    - tailscale          # Verify-only: kiểm tra TS đang chạy, IP khớp
+    # Tailscale không còn là đường của cluster, chỉ là đường quản trị. Verify
+    # nó khi và chỉ khi Ansible đang đi qua tailnet.
+    - role: tailscale
+      when: ansible_transport_net == 'tailscale'
     - common
     - containerd
     - kubernetes
     - cni_plugins
     - firewall
 
-- name: "Phase 2: Init K8s cluster (control plane) + Calico CNI"
+- name: "Phase 2: Init K8s cluster (control plane) + Cilium CNI"
   hosts: masters
   become: true
   roles:
     - master_init
-    - cni_calico
+    - cni_cilium
 
 - name: "Phase 3: Join worker nodes"
   hosts: workers

@@ -31,7 +31,8 @@
   hosts: workers
   become: true
   roles:
-    - tailscale          # Verify-only
+    - role: tailscale
+      when: ansible_transport_net == 'tailscale'
     - common
     - containerd
     - kubernetes

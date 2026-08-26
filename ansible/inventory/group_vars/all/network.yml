@@ -1,33 +1,72 @@
 ---
 # =============================================================================
 # network.yml — Cấu hình mạng cluster
-#
-# Bao gồm: Pod/Service CIDR, cổng firewall, VPN interface.
-# Không chứa thông tin nhạy cảm (secrets nằm trong vault.yml).
 # =============================================================================
 
-# --- Kubernetes Networking ---
-pod_cidr: "10.244.0.0/16"              # Calico IPPool (phải khớp deploy/cni/calico/calico-custom.yaml)
-service_cidr: "10.95.0.0/12"
+# --- Đường Ansible đi: lan | tailscale -----------------------------------
+# Chỉ ảnh hưởng ansible_host. Không ảnh hưởng định danh node.
+ansible_transport_net: "lan"
 
-# --- VPN Interface ---
-vpn_interface: "tailscale0"             # Interface dùng cho inter-node communication
+# --- LAN -----------------------------------------------------------------
+# Cả ba node nằm cùng một broadcast domain (đã xác minh: ping + ARP trực tiếp
+# hai chiều, cùng gateway MAC 30:68:93:14:21:8e). Đây là điều kiện bắt buộc
+# của Cilium autoDirectNodeRoutes.
+lan_cidr: "192.168.0.0/24"
+lan_gateway: "192.168.0.1"
 
-# --- API Server ---
+# --- Kubernetes Networking ------------------------------------------------
+pod_cidr: "10.244.0.0/16"              # Cilium ipam.mode=kubernetes lấy từ đây
+# 10.95.0.0/12 (giá trị cũ) không phải network address: khối /12 chứa nó là
+# 10.80.0.0/12, nên kubeadm âm thầm mask lại và CIDR thật khác CIDR đã khai.
+service_cidr: "10.96.0.0/12"
+
+# Không dải nào trong ba dải trên chồng lên nhau, và cũng không chồng lên LAN.
+# Nếu sau này đổi LAN sang 10.0.0.0/16 thì vẫn an toàn; 10.0.0.0/8 thì KHÔNG,
+# vì /8 nuốt cả 10.244.x lẫn 10.96.x.
+
+# --- API Server ----------------------------------------------------------
 k8s_api_port: 6443
 
-# --- Firewall: Control Plane Ports ---
+# --- Firewall ------------------------------------------------------------
+# Không còn cổng VXLAN 8472: routingMode=native, gói pod đi thẳng trên LAN
+# không đóng gói. Không còn 10256 (kube-proxy healthz): kubeProxyReplacement.
 master_firewall_ports:
   - { port: "6443",       proto: "tcp", comment: "K8s API server" }
   - { port: "2379:2380",  proto: "tcp", comment: "etcd client/peer" }
   - { port: "10250",      proto: "tcp", comment: "kubelet API" }
   - { port: "10259",      proto: "tcp", comment: "kube-scheduler" }
   - { port: "10257",      proto: "tcp", comment: "kube-controller-manager" }
-  - { port: "4789",       proto: "udp", comment: "Calico VXLAN" }
+  - { port: "4240",       proto: "tcp", comment: "Cilium health check" }
 
-# --- Firewall: Worker Node Ports ---
 worker_firewall_ports:
   - { port: "10250",       proto: "tcp", comment: "kubelet API" }
-  - { port: "10256",       proto: "tcp", comment: "kube-proxy healthz" }
   - { port: "30000:32767", proto: "tcp", comment: "NodePort Services" }
-  - { port: "4789",        proto: "udp", comment: "Calico VXLAN" }
+  - { port: "4240",        proto: "tcp", comment: "Cilium health check" }
+
+# --- Ansible ---------------------------------------------------------------
+# Pin interpreter thay vì để auto-discovery. Không pin thì mỗi lần cài thêm
+# một python khác là Ansible có thể chọn interpreter khác và module chạy trong
+# môi trường khác đi.
+ansible_python_interpreter: /usr/bin/python3
+
+# --- Tài nguyên giữ lại cho hệ thống trên node ------------------------------
+# Master vừa chạy control plane vừa nhận workload, nên phải chừa chỗ tường minh.
+#
+# Vấn đề thật: static pod của kubeadm (etcd, apiserver, controller-manager,
+# scheduler) chỉ khai CPU request, KHÔNG khai memory request. Scheduler vì thế
+# coi như chúng tốn 0 byte, trong khi thực tế chúng ăn ~1.5GB. Nếu chỉ reserve
+# đúng phần kubelet + OS thì scheduler sẽ phát ra nhiều hơn số RAM còn thật.
+#
+# Nên system_reserved ở đây cố ý bao luôn phần static pod chưa được tính. Đó là
+# một fudge factor, và ghi ra đây để lần sau đọc lại không tưởng là OS ăn 3GB.
+#
+#   tổng 7819 MB - kube 1024 - system 3072 - ngưỡng evict 500 ~= 3.2GB phát ra
+#   giữ lại cho control plane + kubelet + OS:            ~4.6GB
+kubelet_kube_reserved_memory: "1Gi"
+kubelet_kube_reserved_cpu: "500m"
+kubelet_system_reserved_memory: "3Gi"
+kubelet_system_reserved_cpu: "500m"
+kubelet_eviction_memory: "500Mi"
+
+# Cho phép schedule workload lên master. Với 2 node thì một worker không đủ.
+master_schedulable: true
