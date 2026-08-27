@@ -122,8 +122,8 @@ Trong UI Archer C64:
 
    | Node | MAC | IP |
    |---|---|---|
-   | userver-master | `b4:d5:bd:f1:e9:6a` | 192.168.0.11 |
-   | userver-worker-1 | `80:b6:55:b8:ee:76` | 192.168.0.12 |
+   | userver-master | *(lấy bằng `ip link show <iface>`)* | 192.168.0.11 |
+   | userver-worker-1 | *(lấy bằng `ip link show <iface>`)* | 192.168.0.12 |
    | userver-worker-2 | *(lấy khi cứu được máy)* | 192.168.0.13 |
 
 Bước 1 một mình là đủ. Bước 2 chỉ thêm chắc.

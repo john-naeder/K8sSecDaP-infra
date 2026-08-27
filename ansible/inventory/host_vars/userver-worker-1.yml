@@ -10,7 +10,7 @@ node_role: "worker"
 # Tham khảo — không có task nào đọc hai dòng dưới. Ghi lại vì MAC là thứ cần
 # khi đặt DHCP reservation trên router, và tên interface Wi-Fi khác nhau giữa
 # các máy nên đừng hardcode nó ở đâu cả.
-wifi_mac: "80:b6:55:b8:ee:76"
+wifi_mac: ""   # xem ~/dev/porfolio/STATUS.md — không để MAC trong repo public
 wifi_iface: "wlo1"
 
 # Cluster luôn dùng lan_ip, bất kể Ansible SSH vào bằng đường nào.

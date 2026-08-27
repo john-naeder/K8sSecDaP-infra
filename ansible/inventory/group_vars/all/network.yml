@@ -9,7 +9,7 @@ ansible_transport_net: "lan"
 
 # --- LAN -----------------------------------------------------------------
 # Cả ba node nằm cùng một broadcast domain (đã xác minh: ping + ARP trực tiếp
-# hai chiều, cùng gateway MAC 30:68:93:14:21:8e). Đây là điều kiện bắt buộc
+# hai chiều, và cùng một gateway). Đây là điều kiện bắt buộc
 # của Cilium autoDirectNodeRoutes.
 lan_cidr: "192.168.0.0/24"
 lan_gateway: "192.168.0.1"
