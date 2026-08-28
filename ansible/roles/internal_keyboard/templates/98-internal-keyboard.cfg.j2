@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+#
+# i8042.nokbd: không tạo cổng bàn phím PS/2 nữa, tức bàn phím tích hợp của
+# laptop biến mất khỏi hệ thống. Máy này có phím kẹt, gõ rác vào console.
+#
+# KHÔNG dùng i8042.noaux — đó là cổng chuột PS/2. Touchpad của máy này là
+# ELAN1200 chạy qua I2C nên không liên quan, nhưng ghi rõ để sau khỏi nhầm.
+#
+# Không mất đường vào máy:
+#   - Bàn phím USB rời vẫn chạy (usbhid, khác driver hoàn toàn).
+#   - Power Button và Lid Switch là input device riêng (PNP0C0C / PNP0C0D),
+#     không nằm sau i8042, nên vẫn bật/tắt máy được.
+#   - SSH không liên quan gì tới bàn phím.
+#
+# Gỡ bỏ: xoá file này rồi update-grub và reboot.
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT i8042.nokbd"

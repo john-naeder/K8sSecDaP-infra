@@ -24,6 +24,7 @@
       when: ansible_transport_net == 'tailscale'
     - common
     - console_blank
+    - internal_keyboard
     - containerd
     - kubernetes
     - cni_plugins

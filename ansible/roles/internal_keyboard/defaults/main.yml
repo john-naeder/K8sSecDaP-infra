@@ -1,0 +1,6 @@
+---
+# Tắt bàn phím tích hợp của laptop. Bàn phím USB rời KHÔNG bị ảnh hưởng: nó đi
+# qua usbhid, còn bàn phím trong đi qua i8042/atkbd — hai đường độc lập.
+#
+# Bật cho từng node bằng host_vars, đừng bật đại trà.
+internal_keyboard_disabled: false

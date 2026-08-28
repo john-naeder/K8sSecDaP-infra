@@ -1,0 +1,20 @@
+---
+# =============================================================================
+# internal-keyboard.yml — Tắt bàn phím tích hợp trên các node được đánh dấu.
+#
+# Chạy:  ansible-playbook playbooks/internal-keyboard.yml -K
+#
+# Node nào bị tắt là do internal_keyboard_disabled trong host_vars, không phải
+# do playbook này quyết định. Node không đặt cờ thì bị bỏ qua.
+#
+# Có hiệu lực ngay (unbind atkbd) và bền qua reboot (i8042.nokbd trong GRUB).
+# Bật lại: xoá cờ trong host_vars, xoá /etc/default/grub.d/98-internal-keyboard.cfg,
+# update-grub, reboot. Hoặc tạm thời:
+#   echo -n serio0 > /sys/bus/serio/drivers/atkbd/bind
+# =============================================================================
+
+- name: Tắt bàn phím tích hợp
+  hosts: k8s_cluster
+  become: true
+  roles:
+    - internal_keyboard

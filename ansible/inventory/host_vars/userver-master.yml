@@ -16,3 +16,7 @@ wifi_iface: "wlp2s0"
 # Cluster luôn dùng lan_ip, bất kể Ansible SSH vào bằng đường nào.
 node_ip: "{{ lan_ip }}"
 ansible_host: "{{ lan_ip if ansible_transport_net == 'lan' else tailscale_ip }}"
+
+# Bàn phím tích hợp của máy này có phím kẹt, gõ rác thẳng vào console. Tắt nó
+# đi; bàn phím USB rời cắm vào vẫn dùng bình thường (khác driver hoàn toàn).
+internal_keyboard_disabled: true
