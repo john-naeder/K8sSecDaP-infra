@@ -1,0 +1,66 @@
+---
+# Một vòng bảo trì cho ĐÚNG MỘT node. Được include từ node-maintenance.yml,
+# chạy dưới serial: 1 nên không bao giờ có hai node cùng xuống.
+
+- name: "Drain {{ inventory_hostname }}"
+  ansible.builtin.command:
+    cmd: >-
+      kubectl drain {{ inventory_hostname }}
+      --ignore-daemonsets --delete-emptydir-data --force --timeout=300s
+  delegate_to: "{{ maintenance_control_host }}"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  changed_when: true
+
+- name: "Nâng cấp gói trên {{ inventory_hostname }}"
+  ansible.builtin.apt:
+    upgrade: safe
+    update_cache: true
+    cache_valid_time: 3600
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  register: maintenance_upgrade
+
+- name: "Dọn gói thừa trên {{ inventory_hostname }}"
+  ansible.builtin.apt:
+    autoremove: true
+    autoclean: true
+
+# Reboot dù apt không đổi gì: cả hai node đã mang cờ /var/run/reboot-required
+# từ trước, và consoleblank=5 cũng chỉ có hiệu lực sau lần boot này.
+- name: "Reboot {{ inventory_hostname }}"
+  ansible.builtin.reboot:
+    reboot_timeout: 900
+    post_reboot_delay: 20
+
+- name: "Chờ {{ inventory_hostname }} trở lại Ready"
+  ansible.builtin.command:
+    cmd: kubectl get node {{ inventory_hostname }} -o jsonpath={.status.conditions[?(@.type=="Ready")].status}
+  delegate_to: "{{ maintenance_control_host }}"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  register: maintenance_ready
+  until: maintenance_ready.stdout == "True"
+  retries: 60
+  delay: 10
+  changed_when: false
+
+- name: "Uncordon {{ inventory_hostname }}"
+  ansible.builtin.command:
+    cmd: kubectl uncordon {{ inventory_hostname }}
+  delegate_to: "{{ maintenance_control_host }}"
+  become: true
+  become_user: "{{ k8s_admin_user }}"
+  changed_when: true
+
+- name: "Xác nhận consoleblank đã có hiệu lực trên {{ inventory_hostname }}"
+  ansible.builtin.slurp:
+    src: /sys/module/kernel/parameters/consoleblank
+  register: maintenance_blank
+
+- name: "Báo cáo {{ inventory_hostname }}"
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: Ready,
+      consoleblank={{ maintenance_blank.content | b64decode | trim }}s,
+      kernel={{ ansible_kernel }}

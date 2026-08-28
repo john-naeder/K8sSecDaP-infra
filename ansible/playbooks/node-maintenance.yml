@@ -1,0 +1,37 @@
+---
+# =============================================================================
+# node-maintenance.yml — Cập nhật gói + reboot từng node MỘT CÁCH AN TOÀN.
+#
+# Chạy:  ansible-playbook playbooks/node-maintenance.yml \
+#          -e ansible_transport_net=tailnet -K
+#
+# Mỗi node đi trọn vòng drain → upgrade → reboot → chờ Ready → uncordon rồi
+# mới sang node kế (serial: 1). Workers trước, master sau — vì cả hai replica
+# coredns đang nằm trên master, hạ master trước là mất DNS của cluster.
+#
+# kubeadm/kubectl/kubelet đang ở trạng thái hold nên apt không nâng version
+# K8s. containerd.io thì CÓ nâng, và nó restart runtime giết sạch container
+# trên node — nên phải nằm sau bước drain.
+#
+# Bỏ qua node đang tắt:  --limit '!userver-worker-2'
+# =============================================================================
+
+- name: Bảo trì worker nodes
+  hosts: workers
+  become: true
+  serial: 1
+  vars:
+    maintenance_control_host: "{{ groups['masters'] | first }}"
+  tasks:
+    - name: Bảo trì node
+      ansible.builtin.include_tasks: tasks/drain-upgrade-reboot.yml
+
+- name: Bảo trì master node
+  hosts: masters
+  become: true
+  serial: 1
+  vars:
+    maintenance_control_host: "{{ groups['masters'] | first }}"
+  tasks:
+    - name: Bảo trì node
+      ansible.builtin.include_tasks: tasks/drain-upgrade-reboot.yml
