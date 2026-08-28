@@ -1,0 +1,44 @@
+---
+# =============================================================================
+# Role: console_blank
+# Tắt màn hình console sau vài giây idle. Các node là laptop, mở nắp là màn
+# sáng và cứ thế sáng mãi — vừa tốn điện vừa lộ nội dung console.
+#
+# Áp dụng cho TẤT CẢ nodes. Không đụng gì tới workload hay network.
+# =============================================================================
+
+- name: Kiểm tra giá trị consoleblank hợp lệ
+  ansible.builtin.assert:
+    that:
+      - console_blank_seconds | int >= 1
+      - console_blank_seconds | int <= 3600
+    fail_msg: >-
+      console_blank_seconds phải trong khoảng 1..3600 giây.
+      Đặt 0 là KHÔNG BAO GIỜ tắt màn hình, không phải "tắt ngay".
+
+- name: Đặt consoleblank qua drop-in của GRUB
+  ansible.builtin.template:
+    src: 99-console-blank.cfg.j2
+    dest: /etc/default/grub.d/99-console-blank.cfg
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Update grub
+
+# Chạy handler ngay, để task đọc trạng thái phía dưới phản ánh đúng cấu hình
+# vừa ghi chứ không phải cấu hình của lần chạy trước.
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Đọc consoleblank của kernel ĐANG chạy
+  ansible.builtin.slurp:
+    src: /sys/module/kernel/parameters/consoleblank
+  register: console_blank_running
+
+- name: Báo nếu cần reboot mới có hiệu lực
+  ansible.builtin.debug:
+    msg: >-
+      Kernel đang chạy có consoleblank={{ console_blank_running.content | b64decode | trim }},
+      cấu hình mới là {{ console_blank_seconds }}. Giá trị này chỉ đọc lúc boot,
+      nên phải reboot node mới có hiệu lực.
+  when: (console_blank_running.content | b64decode | trim) != (console_blank_seconds | string)

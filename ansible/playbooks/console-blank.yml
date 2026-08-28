@@ -1,0 +1,16 @@
+---
+# =============================================================================
+# console-blank.yml — Chỉ chỉnh thời gian tắt màn hình console của các node.
+#
+# Chạy:  ansible-playbook playbooks/console-blank.yml
+# Đổi giá trị:  ansible-playbook playbooks/console-blank.yml -e console_blank_seconds=10
+#
+# Không đụng tới cluster: chỉ ghi một drop-in GRUB rồi update-grub. Cần reboot
+# node thì kernel mới đọc giá trị mới.
+# =============================================================================
+
+- name: Đặt thời gian tắt màn hình console
+  hosts: k8s_cluster
+  become: true
+  roles:
+    - console_blank

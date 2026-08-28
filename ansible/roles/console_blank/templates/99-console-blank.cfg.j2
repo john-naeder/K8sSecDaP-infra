@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+#
+# Tắt màn hình console sau {{ console_blank_seconds }} giây idle.
+#
+# "Idle" ở đây là không có input trên bàn phím vật lý của máy. Phiên SSH chạy
+# trên pty chứ không phải trên VT, nên gõ qua SSH KHÔNG reset bộ đếm này và
+# cũng không bật màn hình lên — đúng thứ ta muốn cho node đặt ở nhà.
+#
+# Trên cả hai node (Intel i915 + intel_backlight), blanking mặc định đi thẳng
+# tới FB_BLANK_POWERDOWN, tức là tắt hẳn đèn nền chứ không chỉ đen màn hình:
+# kiểm chứng bằng /sys/class/backlight/intel_backlight/bl_power == 4.
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT consoleblank={{ console_blank_seconds }}"

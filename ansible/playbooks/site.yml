@@ -23,6 +23,7 @@
     - role: tailscale
       when: ansible_transport_net == 'tailscale'
     - common
+    - console_blank
     - containerd
     - kubernetes
     - cni_plugins

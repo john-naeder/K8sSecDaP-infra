@@ -1,0 +1,8 @@
+---
+# Số giây không có thao tác BÀN PHÍM VẬT LÝ trên console thì tắt màn hình.
+# Đây là tham số kernel `consoleblank`, đơn vị giây. Kernel chỉ đọc nó lúc boot
+# (/sys/module/kernel/parameters/consoleblank là 0444), nên đổi giá trị này bắt
+# buộc phải reboot mới có hiệu lực.
+#
+# Không dùng `setterm --blank` được: đơn vị của nó là PHÚT, nhỏ nhất 1 phút.
+console_blank_seconds: 5
