@@ -14,6 +14,19 @@ ansible_transport_net: "lan"
 lan_cidr: "192.168.0.0/24"
 lan_gateway: "192.168.0.1"
 
+# --- Tailnet -------------------------------------------------------------
+# Dải Tailscale cấp cho ba node (100.80.0.1-3). Nằm trong 100.64.0.0/10 —
+# không gian CGNAT — và CHÍNH VÌ THẾ Cilium bỏ qua nó khi tự chọn địa chỉ
+# NodePort. Đo được: nodeport addresses chỉ có 192.168.0.11 và 192.168.0.150.
+tailnet_cidr: "100.80.0.0/24"
+
+# Địa chỉ mà NodePort được phục vụ. Khai tường minh vì mặc định của Cilium
+# loại mất tailnet, mà cluster này đặt ở nhà còn người dùng thì luôn ở xa:
+# không có dải tailnet ở đây thì không thể push code hay mở UI từ ngoài LAN.
+cilium_nodeport_addresses:
+  - "{{ lan_cidr }}"
+  - "{{ tailnet_cidr }}"
+
 # --- Kubernetes Networking ------------------------------------------------
 pod_cidr: "10.244.0.0/16"              # Cilium ipam.mode=kubernetes lấy từ đây
 # 10.95.0.0/12 (giá trị cũ) không phải network address: khối /12 chứa nó là

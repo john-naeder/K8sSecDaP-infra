@@ -30,6 +30,17 @@ k8sServicePort: {{ k8s_api_port }}
 # Hồi node IP còn là IP tailnet thì mới đúng là 1280.
 #
 # Vẫn không khai cứng MTU: để auto-detect thì đổi NIC hay đổi mạng vẫn đúng.
+# NodePort phục vụ trên cả IP LAN lẫn IP tailnet. Mặc định Cilium chỉ lấy
+# "địa chỉ private phù hợp đầu tiên" của mỗi device và bỏ qua 100.64.0.0/10,
+# nên tailscale0 tuy nằm trong danh sách device vẫn không được dùng làm địa
+# chỉ NodePort — biểu hiện: từ xa gõ 100.80.0.1:30022 thì timeout, trong khi
+# từ chính node gõ đúng địa chỉ ấy lại 302 (đường socket-LB nội bộ).
+nodePort:
+  addresses:
+{% for cidr in cilium_nodeport_addresses %}
+    - "{{ cidr }}"
+{% endfor %}
+
 routingMode: native
 autoDirectNodeRoutes: true
 ipv4NativeRoutingCIDR: "{{ cilium_native_routing_cidr }}"
