@@ -5,69 +5,72 @@
 # Chỉ chạy khi internal_keyboard_disabled = true.
 # =============================================================================
 
-- name: Bỏ qua nếu node này không cần tắt bàn phím
-  ansible.builtin.meta: end_host
-  when: not internal_keyboard_disabled
+# end_host KHÔNG dùng được ở đây: nó kết thúc host cho CẢ play, nên trong
+# site.yml/worker.yml các role đứng sau (containerd, kubernetes, cni_plugins,
+# firewall) sẽ bị bỏ qua âm thầm trên mọi node không bật cờ này.
+- name: Tắt bàn phím tích hợp
+  when: internal_keyboard_disabled
+  block:
 
-- name: Tìm cổng i8042 đang giữ bàn phím
-  ansible.builtin.shell:
-    cmd: |
-      set -o pipefail
-      for d in /sys/bus/serio/devices/serio*; do
-        [ -r "$d/description" ] || continue
-        if grep -q 'KBD port' "$d/description"; then
-          basename "$d"
-          exit 0
-        fi
-      done
-      exit 0
-    executable: /bin/bash
-  register: internal_keyboard_port
-  changed_when: false
+  - name: Tìm cổng i8042 đang giữ bàn phím
+    ansible.builtin.shell:
+      cmd: |
+        set -o pipefail
+        for d in /sys/bus/serio/devices/serio*; do
+          [ -r "$d/description" ] || continue
+          if grep -q 'KBD port' "$d/description"; then
+            basename "$d"
+            exit 0
+          fi
+        done
+        exit 0
+      executable: /bin/bash
+    register: internal_keyboard_port
+    changed_when: false
 
-- name: Dừng lại nếu không tìm thấy cổng bàn phím
-  ansible.builtin.assert:
-    that: internal_keyboard_port.stdout | trim | length > 0
-    fail_msg: >-
-      Không thấy cổng serio nào có description "i8042 KBD port". Máy này có thể
-      gắn bàn phím trong qua USB nội bộ, khi đó i8042.nokbd vô tác dụng và tắt
-      nhầm sẽ giết luôn bàn phím rời — kiểm tra /proc/bus/input/devices trước.
+  - name: Dừng lại nếu không tìm thấy cổng bàn phím
+    ansible.builtin.assert:
+      that: internal_keyboard_port.stdout | trim | length > 0
+      fail_msg: >-
+        Không thấy cổng serio nào có description "i8042 KBD port". Máy này có thể
+        gắn bàn phím trong qua USB nội bộ, khi đó i8042.nokbd vô tác dụng và tắt
+        nhầm sẽ giết luôn bàn phím rời — kiểm tra /proc/bus/input/devices trước.
 
-# Kernel param chỉ đọc lúc boot: đây là phần bền vững qua reboot.
-- name: Đặt i8042.nokbd qua drop-in của GRUB
-  ansible.builtin.template:
-    src: 98-internal-keyboard.cfg.j2
-    dest: /etc/default/grub.d/98-internal-keyboard.cfg
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Update grub
+  # Kernel param chỉ đọc lúc boot: đây là phần bền vững qua reboot.
+  - name: Đặt i8042.nokbd qua drop-in của GRUB
+    ansible.builtin.template:
+      src: 98-internal-keyboard.cfg.j2
+      dest: /etc/default/grub.d/98-internal-keyboard.cfg
+      owner: root
+      group: root
+      mode: "0644"
+    notify: Update grub
 
-- name: Flush handlers
-  ansible.builtin.meta: flush_handlers
+  - name: Flush handlers
+    ansible.builtin.meta: flush_handlers
 
-# Phần có hiệu lực NGAY, không phải chờ reboot. Unbind đảo ngược được: ghi tên
-# cổng vào /sys/bus/serio/drivers/atkbd/bind là bàn phím sống lại.
-- name: Kiểm tra atkbd còn bind vào cổng bàn phím không
-  ansible.builtin.stat:
-    path: "/sys/bus/serio/drivers/atkbd/{{ internal_keyboard_port.stdout | trim }}"
-  register: internal_keyboard_bound
+  # Phần có hiệu lực NGAY, không phải chờ reboot. Unbind đảo ngược được: ghi tên
+  # cổng vào /sys/bus/serio/drivers/atkbd/bind là bàn phím sống lại.
+  - name: Kiểm tra atkbd còn bind vào cổng bàn phím không
+    ansible.builtin.stat:
+      path: "/sys/bus/serio/drivers/atkbd/{{ internal_keyboard_port.stdout | trim }}"
+    register: internal_keyboard_bound
 
-- name: Unbind bàn phím tích hợp ngay lập tức
-  ansible.builtin.shell:
-    cmd: "printf '%s' '{{ internal_keyboard_port.stdout | trim }}' > /sys/bus/serio/drivers/atkbd/unbind"
-  when: internal_keyboard_bound.stat.exists
-  changed_when: true
+  - name: Unbind bàn phím tích hợp ngay lập tức
+    ansible.builtin.shell:
+      cmd: "printf '%s' '{{ internal_keyboard_port.stdout | trim }}' > /sys/bus/serio/drivers/atkbd/unbind"
+    when: internal_keyboard_bound.stat.exists
+    changed_when: true
 
-- name: Xác nhận bàn phím tích hợp đã biến mất khỏi input devices
-  ansible.builtin.command:
-    cmd: grep -c "AT Translated Set 2 keyboard" /proc/bus/input/devices
-  register: internal_keyboard_check
-  changed_when: false
-  failed_when: (internal_keyboard_check.stdout | trim) != "0"
+  - name: Xác nhận bàn phím tích hợp đã biến mất khỏi input devices
+    ansible.builtin.command:
+      cmd: grep -c "AT Translated Set 2 keyboard" /proc/bus/input/devices
+    register: internal_keyboard_check
+    changed_when: false
+    failed_when: (internal_keyboard_check.stdout | trim) != "0"
 
-- name: Báo cáo
-  ansible.builtin.debug:
-    msg: >-
-      Bàn phím tích hợp trên cổng {{ internal_keyboard_port.stdout | trim }} đã tắt.
-      Bàn phím USB rời, nút nguồn và lid switch không bị ảnh hưởng.
+  - name: Báo cáo
+    ansible.builtin.debug:
+      msg: >-
+        Bàn phím tích hợp trên cổng {{ internal_keyboard_port.stdout | trim }} đã tắt.
+        Bàn phím USB rời, nút nguồn và lid switch không bị ảnh hưởng.
