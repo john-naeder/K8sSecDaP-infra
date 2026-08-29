@@ -18,10 +18,18 @@ k8sServicePort: {{ k8s_api_port }}
 # autoDirectNodeRoutes cài route tới podCIDR của node khác qua node IP của nó,
 # và thế là đủ — không cần VXLAN, không cần BGP, không cần đụng router.
 #
-# Không khai MTU. Cilium tự lấy MTU nhỏ nhất trong các device nó nhận diện,
-# và vì tailscale0 (1280) nằm trong đó nên pod MTU = 1280 chứ không phải 1500.
-# Để nguyên là đúng: khai cứng 1500 sẽ khiến gói pod đi ra tailnet treo im
-# lặng — TCP vẫn bắt tay được rồi đứng khi gặp gói lớn.
+# Không khai MTU, và kết quả hiện tại là 1500 chứ không phải 1280.
+#
+# Ghi chú cũ ở đây nói Cilium lấy MTU nhỏ nhất trong mọi device nên tailscale0
+# (1280) kéo pod MTU xuống. Đo lại 2026-08-29 thì sai: Cilium lấy MTU của
+# device mang default route (wlp2s0, 1500), không phải min. cilium_host và các
+# lxc* đều 1500, và ping -M do 1500 byte giữa pod hai node đi lọt.
+#
+# Lý do sâu xa là node IP đã chuyển sang LAN: route tới podCIDR node khác là
+# "via 192.168.0.x dev wlp2s0", nên gói pod KHÔNG bao giờ đi qua tailscale0.
+# Hồi node IP còn là IP tailnet thì mới đúng là 1280.
+#
+# Vẫn không khai cứng MTU: để auto-detect thì đổi NIC hay đổi mạng vẫn đúng.
 routingMode: native
 autoDirectNodeRoutes: true
 ipv4NativeRoutingCIDR: "{{ cilium_native_routing_cidr }}"
